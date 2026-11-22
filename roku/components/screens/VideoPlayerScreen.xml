@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+  Plays a movie or episode: asks the server how (GET /api/media/items/{id}/playback - a direct
+  MP4 or an HLS session it starts with ffmpeg), plays it in a Video node, reports progress every
+  10 s, on pause and on leaving, and rolls on to the next episode at the end.
+
+  params: { itemId, start (-1 resumes from the saved position, 0 starts over), title }
+-->
+<component name="VideoPlayerScreen" extends="BaseScreen">
+    <script type="text/brightscript" uri="pkg:/components/lib/Util.brs" />
+    <script type="text/brightscript" uri="pkg:/components/lib/Mappers.brs" />
+    <script type="text/brightscript" uri="pkg:/components/lib/Net.brs" />
+    <script type="text/brightscript" uri="pkg:/components/lib/Ui.brs" />
+    <script type="text/brightscript" uri="pkg:/components/screens/VideoPlayerScreen.brs" />
+    <children>
+        <Rectangle width="1920" height="1080" color="0x000000FF" />
+        <Video id="video" width="1920" height="1080" enableUI="true" />
+        <Group id="overlay">
+            <Rectangle width="1920" height="1080" color="0x0E0A12FF" />
+            <Poster id="overlayArt" width="1920" height="1080" loadDisplayMode="scaleToZoom" opacity="0.25" loadWidth="1280" loadHeight="720" />
+            <Label id="overlayTitle" translation="[160,380]" width="1600" horizAlign="center" color="0xF4E9DAFF" font="font:LargeBoldSystemFont" />
+            <Label id="overlayText" translation="[160,470]" width="1600" horizAlign="center" wrap="true" maxLines="6" color="0xA99A8EFF" font="font:MediumSystemFont" />
+            <BusySpinner id="spinner" translation="[912,680]" />
+        </Group>
+        <Timer id="progressTimer" repeat="true" duration="10" />
+    </children>
+</component>

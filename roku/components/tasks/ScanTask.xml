@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+  Looks for ReelHouse servers on this Roku's local network.
+
+  Roku has no mDNS/Bonjour API, so this does what Bonjour would have told us the long way: for
+  each IPv4 address the Roku has, it asks every other host on that /24 for GET /api/health on
+  port 3350, a batch of transfers at a time with a short deadline, and keeps the ones answering
+  with "product": "ReelHouse".
+
+  found     [{ url, address, build }] - updated as servers answer
+  progress  0..100
+  done      true once every host has been asked
+  subnets   the /24s being scanned, e.g. ["192.168.1.0/24"]
+-->
+<component name="ScanTask" extends="Task">
+    <interface>
+        <field id="port" type="integer" value="3350" />
+        <field id="batchSize" type="integer" value="32" />
+        <field id="deadlineMs" type="integer" value="1500" />
+        <field id="found" type="array" />
+        <field id="progress" type="integer" value="0" />
+        <field id="subnets" type="array" />
+        <field id="done" type="boolean" value="false" />
+    </interface>
+    <script type="text/brightscript" uri="pkg:/components/lib/Util.brs" />
+    <script type="text/brightscript" uri="pkg:/components/lib/Mappers.brs" />
+    <script type="text/brightscript" uri="pkg:/components/tasks/ScanTask.brs" />
+</component>

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- The REELHOUSE mark and wordmark across the top of a screen, with an optional hint on the
+     right ("* Settings") and a section title under the wordmark. -->
+<component name="BrandHeader" extends="Group">
+    <interface>
+        <field id="hint" type="string" alias="hintLabel.text" />
+        <field id="section" type="string" alias="sectionLabel.text" />
+    </interface>
+    <children>
+        <Poster uri="pkg:/images/logo_mark.png" width="72" height="72" translation="[96,40]" />
+        <Label text="REELHOUSE" translation="[184,48]" color="0xFFC24BFF">
+            <Font role="font" uri="font:BoldSystemFontFile" size="44" />
+        </Label>
+        <Label id="sectionLabel" translation="[520,56]" width="700" color="0xA99A8EFF" font="font:MediumSystemFont" />
+        <Label id="hintLabel" translation="[1224,58]" width="600" horizAlign="right" color="0xA99A8EFF" font="font:SmallestSystemFont" />
+    </children>
+</component>

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+  One tile in Home's RowList and the GridScreen's MarkupGrid: artwork (poster, 16:9 still or
+  square cover), a progress bar, and the title and subtitle under it. Without artwork - or until
+  it has loaded, or when the server refused it - the tile is a text card. "action" tiles (Browse
+  row, "All Movies") are a card with a label. Focus draws a gold frame.
+-->
+<component name="PosterItem" extends="Group">
+    <interface>
+        <field id="itemContent" type="node" onChange="onContent" />
+        <field id="width" type="float" onChange="layout" />
+        <field id="height" type="float" onChange="layout" />
+        <field id="focusPercent" type="float" onChange="onFocus" />
+        <field id="rowFocusPercent" type="float" value="1.0" onChange="onFocus" />
+        <field id="rowListHasFocus" type="boolean" value="true" onChange="onFocus" />
+        <field id="gridHasFocus" type="boolean" value="true" onChange="onFocus" />
+    </interface>
+    <script type="text/brightscript" uri="pkg:/components/items/PosterItem.brs" />
+    <children>
+        <Rectangle id="frame" color="0xFFC24BFF" opacity="0" />
+        <Rectangle id="card" color="0x1F1629FF" />
+        <Label id="cardLabel" horizAlign="center" vertAlign="center" wrap="true" maxLines="4" color="0xF4E9DAFF" font="font:MediumBoldSystemFont" />
+        <Label id="cardSub" horizAlign="center" vertAlign="top" color="0xA99A8EFF" font="font:SmallestSystemFont" />
+        <Poster id="art" loadDisplayMode="scaleToZoom" />
+        <Rectangle id="watchedBadge" color="0xFFC24BFF" width="116" height="34" visible="false">
+            <Label id="watchedMark" text="WATCHED" width="116" height="34" horizAlign="center" vertAlign="center" color="0x0E0A12FF" font="font:SmallestBoldSystemFont" />
+        </Rectangle>
+        <Rectangle id="barTrack" color="0x0E0A12CC" visible="false" />
+        <Rectangle id="barFill" color="0xFFC24BFF" visible="false" />
+        <Label id="title" color="0xF4E9DAFF" font="font:SmallBoldSystemFont" />
+        <Label id="subtitle" color="0xA99A8EFF" font="font:SmallestSystemFont" />
+    </children>
+</component>

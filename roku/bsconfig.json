@@ -1,0 +1,15 @@
+{
+    "$schema": "https://raw.githubusercontent.com/rokucommunity/brighterscript/master/bsconfig.schema.json",
+    "rootDir": ".",
+    "files": [
+        "manifest",
+        "source/**/*",
+        "components/**/*",
+        "images/**/*"
+    ],
+    "stagingDir": "out/staging",
+    "outFile": "out/reelhouse-roku.zip",
+    "createPackage": false,
+    "retainStagingDir": false,
+    "diagnosticFilters": []
+}

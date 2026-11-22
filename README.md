@@ -9,10 +9,11 @@ A self-hosted home media server: your own **movies and TV, music and podcasts**,
 | iPhone, iPad and Mac app | [ios/](ios/README.md) | SwiftUI |
 | Apple TV app | [appletv/](appletv/README.md) | SwiftUI (tvOS) |
 | Android app | [android/](android/README.md) | Kotlin, Jetpack Compose |
+| Roku channel | [roku/](roku/README.md) | BrightScript, SceneGraph |
 
 Every app connects to the same server. They find it on the local network by themselves
-(Bonjour/mDNS `_reelhouse._tcp`), or you type its address: `http://<server>:3350`, or
-`https://<server>:3453`.
+(Bonjour/mDNS `_reelhouse._tcp`; the Roku channel, which has no mDNS, scans its subnet instead),
+or you type its address: `http://<server>:3350`, or `https://<server>:3453`.
 
 Phones can get **push notifications**: a new podcast episode, a download that finished, a
 failed sign-in. How to turn them on, and what the server and app builds need:

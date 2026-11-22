@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- Settings: which server, who is signed in, change server, sign out, and what this Roku plays. -->
+<component name="SettingsScreen" extends="BaseScreen">
+    <script type="text/brightscript" uri="pkg:/components/lib/Util.brs" />
+    <script type="text/brightscript" uri="pkg:/components/lib/Mappers.brs" />
+    <script type="text/brightscript" uri="pkg:/components/lib/Net.brs" />
+    <script type="text/brightscript" uri="pkg:/components/lib/Ui.brs" />
+    <script type="text/brightscript" uri="pkg:/components/screens/SettingsScreen.brs" />
+    <children>
+        <BrandHeader id="header" section="Settings" />
+        <ButtonGroup id="buttons" translation="[96,190]" />
+        <Rectangle translation="[620,190]" width="1204" height="820" color="0x171020FF" />
+        <Label id="info" translation="[660,220]" width="1124" height="760" wrap="true" lineSpacing="10" color="0xF4E9DAFF" font="font:SmallSystemFont" />
+    </children>
+</component>

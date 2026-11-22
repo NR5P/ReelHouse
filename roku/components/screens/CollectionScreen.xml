@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+  A list of things to play, with its cover: params.kind is
+    album     GET /api/music/albums/{id}            tracks
+    playlist  GET /api/music/playlists/{id}         tracks
+    artist    GET /api/music/artists/{id}           top tracks, then the artist's albums
+    mix       GET /api/music/mix?mix={id}           tracks
+    shuffle   GET /api/music/shuffle                tracks ("Shuffle All")
+    podcast   GET /api/podcasts/{id} + /episodes    episodes, newest first
+  OK on a track plays the list from there; on an album opens it; on an episode plays it.
+  params.autoPlay starts playing as soon as the list is in.
+-->
+<component name="CollectionScreen" extends="BaseScreen">
+    <script type="text/brightscript" uri="pkg:/components/lib/Util.brs" />
+    <script type="text/brightscript" uri="pkg:/components/lib/Mappers.brs" />
+    <script type="text/brightscript" uri="pkg:/components/lib/Net.brs" />
+    <script type="text/brightscript" uri="pkg:/components/lib/Ui.brs" />
+    <script type="text/brightscript" uri="pkg:/components/screens/CollectionScreen.brs" />
+    <children>
+        <BrandHeader id="header" />
+        <Rectangle translation="[96,150]" width="420" height="420" color="0x1F1629FF" />
+        <Poster id="art" translation="[96,150]" width="420" height="420" loadDisplayMode="scaleToZoom" loadWidth="420" loadHeight="420" />
+        <Label id="kicker" translation="[96,596]" width="420" color="0xFFC24BFF" font="font:SmallBoldSystemFont" />
+        <Label id="title" translation="[96,634]" width="420" wrap="true" maxLines="2" color="0xF4E9DAFF" font="font:MediumBoldSystemFont" />
+        <Label id="subtitle" translation="[96,734]" width="420" wrap="true" maxLines="2" color="0xA99A8EFF" font="font:SmallestSystemFont" />
+        <ButtonGroup id="buttons" translation="[96,816]" />
+        <MarkupList id="list" translation="[580,150]" itemComponentName="ListRowItem" itemSize="[1244,104]" itemSpacing="[0,10]"
+            numRows="8" drawFocusFeedback="false" vertFocusAnimationStyle="floatingFocus" />
+        <Label id="message" translation="[580,400]" width="1244" horizAlign="center" wrap="true" maxLines="4" color="0xA99A8EFF" font="font:MediumSystemFont" text="Loading..." />
+    </children>
+</component>

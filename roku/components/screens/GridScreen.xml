@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+  Everything of one kind in a grid: params.kind is movies | shows | albums | artists | playlists |
+  podcasts. Pages in 60 at a time as focus nears the end. * changes the sort (movies, shows,
+  albums, artists); PLAY starts the focused tile.
+-->
+<component name="GridScreen" extends="BaseScreen">
+    <script type="text/brightscript" uri="pkg:/components/lib/Util.brs" />
+    <script type="text/brightscript" uri="pkg:/components/lib/Mappers.brs" />
+    <script type="text/brightscript" uri="pkg:/components/lib/Net.brs" />
+    <script type="text/brightscript" uri="pkg:/components/lib/Ui.brs" />
+    <script type="text/brightscript" uri="pkg:/components/screens/GridScreen.brs" />
+    <children>
+        <BrandHeader id="header" />
+        <Label id="title" translation="[96,140]" width="1200" color="0xF4E9DAFF" font="font:LargeBoldSystemFont" />
+        <Label id="count" translation="[1224,156]" width="600" horizAlign="right" color="0xA99A8EFF" font="font:SmallSystemFont" />
+        <MarkupGrid id="grid" translation="[102,230]" itemComponentName="PosterItem" drawFocusFeedback="false"
+            vertFocusAnimationStyle="floatingFocus" itemSpacing="[28,36]" />
+        <Label id="message" translation="[160,480]" width="1600" horizAlign="center" wrap="true" maxLines="4" color="0xA99A8EFF" font="font:MediumSystemFont" />
+    </children>
+</component>

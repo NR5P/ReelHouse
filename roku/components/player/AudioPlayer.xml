@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+  The channel's one audio player, for music and podcasts. Lives in MainScene (and in
+  m.global.player) so playback carries on while you browse; NowPlayingScreen just watches it.
+
+  in:
+    load     { queue: [entry], index, context } - starts playing entry `index`
+             entry: { type: "track"|"episode", id, title, subtitle, art, url, format, duration, resume }
+             (Mappers.brs rh_trackQueueItem / rh_episodeQueueItem)
+    command  play | pause | resume | toggle | next | prev | back15 | fwd30 | stop
+
+  out: current (the entry), index, count, state (the Audio node's), position, duration,
+       active (something loaded), kind ("music" | "podcast"), errorText
+
+  Reports (MUSIC_AND_PODCASTS.md): music POST .../tracks/{id}/played when a track ends or is
+  skipped, plus .../now-playing-track as it starts; podcasts POST .../episodes/{id}/progress every
+  15 s while playing, on pause and on leaving the episode; both PUT /api/audio/now-playing on
+  each change and every 30 s.
+-->
+<component name="AudioPlayer" extends="Group">
+    <interface>
+        <field id="load" type="assocarray" onChange="onLoad" />
+        <field id="command" type="string" alwaysNotify="true" onChange="onCommand" />
+        <field id="current" type="assocarray" />
+        <field id="index" type="integer" value="-1" />
+        <field id="count" type="integer" value="0" />
+        <field id="state" type="string" value="none" />
+        <field id="position" type="float" value="0" />
+        <field id="duration" type="float" value="0" />
+        <field id="active" type="boolean" value="false" />
+        <field id="kind" type="string" value="" />
+        <field id="errorText" type="string" value="" />
+    </interface>
+    <script type="text/brightscript" uri="pkg:/components/lib/Util.brs" />
+    <script type="text/brightscript" uri="pkg:/components/lib/Net.brs" />
+    <script type="text/brightscript" uri="pkg:/components/player/AudioPlayer.brs" />
+    <children>
+        <Audio id="audio" />
+        <Timer id="progressTimer" repeat="true" duration="15" />
+        <Timer id="nowPlayingTimer" repeat="true" duration="30" />
+    </children>
+</component>

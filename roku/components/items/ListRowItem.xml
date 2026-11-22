@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+  One row of a MarkupList: a track, a podcast or TV episode, a discovered server. Optional
+  thumbnail (square, or 16:9 for TV episodes), a track number, title, subtitle, a line of detail,
+  a right-aligned duration and a progress bar. Focus fills the row gold.
+-->
+<component name="ListRowItem" extends="Group">
+    <interface>
+        <field id="itemContent" type="node" onChange="onContent" />
+        <field id="width" type="float" value="1200" onChange="layout" />
+        <field id="height" type="float" value="110" onChange="layout" />
+        <field id="focusPercent" type="float" onChange="onFocus" />
+        <field id="listHasFocus" type="boolean" value="true" onChange="onFocus" />
+    </interface>
+    <script type="text/brightscript" uri="pkg:/components/items/ListRowItem.brs" />
+    <children>
+        <Rectangle id="bg" color="0x1F1629FF" />
+        <Rectangle id="focusBg" color="0xFFC24BFF" opacity="0" />
+        <Poster id="art" loadDisplayMode="scaleToZoom" />
+        <Label id="index" horizAlign="center" vertAlign="center" color="0xA99A8EFF" font="font:SmallSystemFont" />
+        <Label id="title" color="0xF4E9DAFF" font="font:SmallBoldSystemFont" />
+        <Label id="subtitle" color="0xA99A8EFF" font="font:SmallestSystemFont" />
+        <Label id="detail" color="0xA99A8EFF" font="font:SmallestSystemFont" />
+        <Label id="right" horizAlign="right" color="0xA99A8EFF" font="font:SmallSystemFont" />
+        <Rectangle id="barTrack" color="0x3A2B3AFF" visible="false" />
+        <Rectangle id="barFill" color="0xFFC24BFF" visible="false" />
+    </children>
+</component>

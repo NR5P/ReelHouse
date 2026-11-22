@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+  Now Playing for music and podcasts: cover, title, artist/show, position, and the transport
+  buttons. Watches m.global.player (AudioPlayer); Back leaves it playing. Remote: PLAY/PAUSE
+  toggles, REW/FF skip tracks (music) or jump 15 s back / 30 s on (podcasts), REPLAY goes back.
+-->
+<component name="NowPlayingScreen" extends="BaseScreen">
+    <script type="text/brightscript" uri="pkg:/components/lib/Util.brs" />
+    <script type="text/brightscript" uri="pkg:/components/lib/Ui.brs" />
+    <script type="text/brightscript" uri="pkg:/components/screens/NowPlayingScreen.brs" />
+    <children>
+        <Poster id="backdrop" width="1920" height="1080" loadDisplayMode="scaleToZoom" opacity="0.18" loadWidth="640" loadHeight="640" />
+        <Rectangle width="1920" height="1080" color="0x0E0A1299" />
+        <BrandHeader id="header" hint="Back keeps it playing" />
+        <Rectangle translation="[160,220]" width="600" height="600" color="0x1F1629FF" />
+        <Poster id="art" translation="[160,220]" width="600" height="600" loadDisplayMode="scaleToZoom" loadWidth="600" loadHeight="600" />
+        <Label id="kicker" translation="[840,240]" width="960" color="0xFFC24BFF" font="font:SmallBoldSystemFont" />
+        <Label id="title" translation="[840,290]" width="960" wrap="true" maxLines="2" color="0xF4E9DAFF" font="font:LargeBoldSystemFont" />
+        <Label id="subtitle" translation="[840,440]" width="960" wrap="true" maxLines="2" color="0xA99A8EFF" font="font:MediumSystemFont" />
+        <Label id="position" translation="[840,520]" width="960" color="0xA99A8EFF" font="font:SmallSystemFont" />
+        <Rectangle id="barTrack" translation="[840,600]" width="960" height="10" color="0x3A2B3AFF" />
+        <Rectangle id="barFill" translation="[840,600]" width="0" height="10" color="0xFFC24BFF" />
+        <Label id="elapsed" translation="[840,624]" width="300" color="0xF4E9DAFF" font="font:SmallSystemFont" />
+        <Label id="remaining" translation="[1500,624]" width="300" horizAlign="right" color="0xF4E9DAFF" font="font:SmallSystemFont" />
+        <ButtonGroup id="buttons" translation="[840,700]" layoutDirection="horiz" itemSpacings="[16]" />
+        <Label id="error" translation="[840,820]" width="960" wrap="true" maxLines="3" color="0xE23D3DFF" font="font:SmallBoldSystemFont" />
+    </children>
+</component>

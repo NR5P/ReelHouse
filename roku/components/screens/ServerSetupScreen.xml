@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+  Choosing the server: scan this Roku's network for ReelHouse servers (ScanTask), or type the
+  address on the on-screen keyboard. Also where the channel lands when the saved server can't be
+  reached (params.error, params.canRetry).
+-->
+<component name="ServerSetupScreen" extends="BaseScreen">
+    <script type="text/brightscript" uri="pkg:/components/lib/Util.brs" />
+    <script type="text/brightscript" uri="pkg:/components/lib/Mappers.brs" />
+    <script type="text/brightscript" uri="pkg:/components/lib/Net.brs" />
+    <script type="text/brightscript" uri="pkg:/components/lib/Ui.brs" />
+    <script type="text/brightscript" uri="pkg:/components/screens/ServerSetupScreen.brs" />
+    <children>
+        <BrandHeader id="header" />
+        <Label text="Connect to your ReelHouse server" translation="[96,190]" width="1700" color="0xF4E9DAFF" font="font:LargeBoldSystemFont" />
+        <Label id="intro" translation="[96,270]" width="1500" wrap="true" maxLines="3" color="0xA99A8EFF" font="font:MediumSystemFont"
+            text="ReelHouse runs on a computer in your home. Scan this network for it, or type its address - for example 192.168.1.20 (port 3350 is added for you)." />
+        <Label id="error" translation="[96,380]" width="1700" wrap="true" maxLines="3" color="0xE23D3DFF" font="font:SmallBoldSystemFont" />
+
+        <ButtonGroup id="buttons" translation="[96,500]" />
+
+        <Group id="foundPanel" translation="[620,480]">
+            <Label text="FOUND ON YOUR NETWORK" color="0xFFC24BFF" font="font:SmallBoldSystemFont" />
+            <Label id="scanStatus" translation="[0,44]" width="1180" color="0xA99A8EFF" font="font:SmallSystemFont" />
+            <Rectangle id="scanTrack" translation="[0,92]" width="1180" height="6" color="0x3A2B3AFF" />
+            <Rectangle id="scanFill" translation="[0,92]" width="0" height="6" color="0xFFC24BFF" />
+            <MarkupList id="found" translation="[0,120]" itemComponentName="ListRowItem" itemSize="[1180,96]" itemSpacing="[0,12]" numRows="4" drawFocusFeedback="false" vertFocusAnimationStyle="floatingFocus" />
+        </Group>
+        <Label id="hint" translation="[96,1010]" width="1700" color="0xA99A8EFF" font="font:SmallestSystemFont"
+            text="Your Roku and the server must be on the same network. HTTPS isn't used on Roku: the channel talks to the server's plain-HTTP port." />
+    </children>
+</component>

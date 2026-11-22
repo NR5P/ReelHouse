@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+  The fields every screen shares with MainScene's navigation stack. Screens extend this and
+  observe the fields themselves (a parent component's script isn't in its children's scope).
+
+  params   set once by MainScene right after the screen is pushed: what to show
+  action   set by the screen to ask MainScene for something: { type: "push" | "pop" | "open" |
+           "play" | "playVideo" | "playAudio" | ... } - see MainScene.brs onScreenAction
+  closing  set true by MainScene as the screen is popped: stop timers, players and requests
+  revisit  bumped by MainScene each time the screen comes back to the top (after a player
+           closes, say), so it can refresh progress
+-->
+<component name="BaseScreen" extends="Group">
+    <interface>
+        <field id="params" type="assocarray" />
+        <field id="action" type="assocarray" alwaysNotify="true" />
+        <field id="closing" type="boolean" value="false" />
+        <field id="revisit" type="integer" value="0" />
+    </interface>
+</component>

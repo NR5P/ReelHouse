@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+  One request to the ReelHouse server, off the render thread.
+
+  request (set it, then control = "RUN"):
+    method   GET | POST | PUT | DELETE
+    path     "/api/media/home" (or an absolute URL)
+    query    { name: value } added to the URL
+    body     object sent as JSON (any non-GET)
+    server   overrides m.global.serverUrl (probing an address before it is saved)
+    noCookie true to leave the session cookie off (probing a server that isn't the saved one)
+    timeout  milliseconds, default 20000
+    key/tag  echoed back in the response
+
+  response: { key, tag, ok, status, data, error }
+    status   HTTP status, or a negative curl code when the server couldn't be reached
+    data     the parsed JSON body, invalid when there was none
+    error    a message fit to show, "" when ok
+-->
+<component name="ApiTask" extends="Task">
+    <interface>
+        <field id="request" type="assocarray" />
+        <field id="response" type="assocarray" />
+    </interface>
+    <script type="text/brightscript" uri="pkg:/components/lib/Util.brs" />
+    <script type="text/brightscript" uri="pkg:/components/lib/Store.brs" />
+    <script type="text/brightscript" uri="pkg:/components/tasks/ApiTask.brs" />
+</component>

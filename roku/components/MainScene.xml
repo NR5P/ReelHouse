@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+  The channel's one Scene: connection and sign-in flow, the navigation stack of screens, the
+  shared audio player (music and podcasts keep playing while you browse), and the small
+  "now playing" pill shown over the other screens.
+-->
+<component name="MainScene" extends="Scene">
+    <script type="text/brightscript" uri="pkg:/components/lib/Util.brs" />
+    <script type="text/brightscript" uri="pkg:/components/lib/Mappers.brs" />
+    <script type="text/brightscript" uri="pkg:/components/lib/Store.brs" />
+    <script type="text/brightscript" uri="pkg:/components/lib/Net.brs" />
+    <script type="text/brightscript" uri="pkg:/components/lib/Ui.brs" />
+    <script type="text/brightscript" uri="pkg:/components/MainScene.brs" />
+    <children>
+        <Rectangle id="background" width="1920" height="1080" color="0x0E0A12FF" />
+        <Group id="screens" />
+
+        <Group id="status" visible="false">
+            <Rectangle width="1920" height="1080" color="0x0E0A12FF" />
+            <Poster id="statusLogo" uri="pkg:/images/logo_mark.png" width="160" height="160" translation="[880,300]" />
+            <Label id="statusText" width="1600" translation="[160,500]" horizAlign="center" wrap="true" maxLines="3" font="font:MediumSystemFont" color="0xF4E9DAFF" />
+            <BusySpinner id="spinner" translation="[912,640]" />
+        </Group>
+
+        <Group id="miniPlayer" visible="false" translation="[1180,28]">
+            <Rectangle width="700" height="60" color="0x171020EE" />
+            <Rectangle width="8" height="60" color="0xFFC24BFF" />
+            <Label id="miniText" translation="[28,0]" width="650" height="60" vertAlign="center" font="font:SmallestSystemFont" color="0xF4E9DAFF" />
+        </Group>
+
+        <AudioPlayer id="player" />
+    </children>
+</component>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+  Sign-in: username and password on the on-screen keyboard, POST /api/auth/login. The server
+  answers with the session cookie (ApiTask keeps it); the password is dropped straight after.
+-->
+<component name="LoginScreen" extends="BaseScreen">
+    <script type="text/brightscript" uri="pkg:/components/lib/Util.brs" />
+    <script type="text/brightscript" uri="pkg:/components/lib/Net.brs" />
+    <script type="text/brightscript" uri="pkg:/components/lib/Ui.brs" />
+    <script type="text/brightscript" uri="pkg:/components/screens/LoginScreen.brs" />
+    <children>
+        <BrandHeader id="header" />
+        <Label id="heading" translation="[96,190]" width="1700" color="0xF4E9DAFF" font="font:LargeBoldSystemFont" />
+        <Label id="message" translation="[96,270]" width="1500" wrap="true" maxLines="3" color="0xA99A8EFF" font="font:MediumSystemFont" />
+        <Label id="error" translation="[96,390]" width="1500" wrap="true" maxLines="3" color="0xE23D3DFF" font="font:SmallBoldSystemFont" />
+        <ButtonGroup id="buttons" translation="[96,500]" />
+        <Label translation="[96,1010]" width="1700" color="0xA99A8EFF" font="font:SmallestSystemFont"
+            text="Use the account your ReelHouse admin made for you. Your password is never stored on this Roku." />
+    </children>
+</component>

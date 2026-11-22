@@ -30,3 +30,7 @@ captures/
 *.p8
 *.lic
 *service-account*.json
+
+# Roku: the packaged channel and BrighterScript's staging folder (roku/scripts/package.sh)
+roku/out/
+roku/*.zip
