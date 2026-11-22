@@ -1,0 +1,19 @@
+[Unit]
+Description=ReelHouse downloads: VPN check (what the internet sees the tunnel as)
+PartOf=reelhouse-downloads.target
+BindsTo=reelhouse-vpn.service
+After=reelhouse-vpn.service
+
+[Service]
+Type=simple
+User=__APP_USER__
+Group=__APP_USER__
+NetworkNamespacePath=/run/netns/rhvpn
+BindReadOnlyPaths=/etc/netns/rhvpn/resolv.conf:/etc/resolv.conf /etc/netns/rhvpn/nsswitch.conf:/etc/nsswitch.conf
+# /run/reelhouse-vpn/status.json - removed when this stops, which ReelHouse reads as "off".
+RuntimeDirectory=reelhouse-vpn
+RuntimeDirectoryMode=0755
+ExecStart=/usr/local/lib/reelhouse-downloads/reelhouse-vpn watch
+Restart=on-failure
+RestartSec=10
+SyslogIdentifier=reelhouse-vpn-watch

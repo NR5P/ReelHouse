@@ -1,0 +1,32 @@
+.DS_Store
+
+# .NET
+bin/
+obj/
+# The server's runtime data: libraries, accounts, settings, certificates, artwork caches.
+server/ReelHouse.Server/data/
+
+# Xcode
+xcuserdata/
+DerivedData/
+build/
+*.xcuserstate
+
+# Android: the Firebase app registration (push notifications). Per-project, kept out of the repo.
+**/google-services.json
+
+# Android build and machine-specific files
+.gradle/
+.kotlin/
+local.properties
+keystore.properties
+*.jks
+*.keystore
+.idea/
+*.iml
+captures/
+
+# Secrets that must never be committed: push keys, license files, signing keys
+*.p8
+*.lic
+*service-account*.json

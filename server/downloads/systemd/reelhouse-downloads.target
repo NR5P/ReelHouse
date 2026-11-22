@@ -1,0 +1,6 @@
+[Unit]
+Description=ReelHouse movie downloads (VPN tunnel, qBittorrent, Prowlarr)
+# Never started at boot: ReelHouse starts this when someone searches or downloads and stops it
+# once nothing has needed it for Settings -> MOVIE DOWNLOADS -> Switch Off After. Every unit below
+# is PartOf this target, so stopping it stops all of them.
+Wants=reelhouse-vpn.service reelhouse-vpn-watch.service reelhouse-qbittorrent.service reelhouse-prowlarr.service reelhouse-flaresolverr.service

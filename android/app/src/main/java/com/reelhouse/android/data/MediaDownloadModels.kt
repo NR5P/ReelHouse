@@ -1,0 +1,871 @@
+package com.reelhouse.android.data
+
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.URLEncoder
+import java.time.Instant
+import java.time.OffsetDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
+
+// Movie downloads - "+ Add" on the Movies tab. The contract is core/docs/MOVIE_DOWNLOADS.md: find a
+// title on TMDB, pick a release the household's torrent sites offer, and the server downloads it
+// through a VPN and files it into the library. As in MediaModels.kt, every field is nullable or
+// defaulted so an older or partial server answer never throws its way out of a parse, and the
+// parsers are `internal` top-level functions so the JVM unit tests can feed them the contract's
+// sample JSON.
+
+data class MediaDownloadVpn(
+    // "connected", "connecting", "down", "off", "unknown", or "disabled" (Use VPN is off in
+    // Settings: downloads use the home connection and ip/location/country/provider/error are null).
+    val state: String = "unknown",
+    // The useVpn setting.
+    val required: Boolean = true,
+    // The address the sites see was compared with the server's own and differs. Missing = false.
+    val verified: Boolean = false,
+    val verifiedAt: String? = null,
+    val ip: String? = null,
+    val location: String? = null,
+    val country: String? = null,
+    val provider: String? = null,
+    val checkedAt: String? = null,
+    val error: String? = null,
+    // The VPN provider's account, when the server can read it (Mullvad only); null otherwise and
+    // on older servers.
+    val account: MediaVpnAccount? = null,
+)
+
+// vpn.account: how long the Mullvad account has paid for.
+data class MediaVpnAccount(
+    val provider: String = "mullvad",
+    val paidUntil: String? = null,
+    // Whole days left, rounded down.
+    val daysLeft: Int = 0,
+    // 7 days or less left.
+    val runningOut: Boolean = false,
+    // The paid time is used up - the tunnel will not connect.
+    val expired: Boolean = false,
+    val checkedAt: String? = null,
+)
+
+// POST /api/media/downloads/vpn/test: whether the VPN works, in words, and the status after.
+data class MediaVpnTestResult(
+    val ok: Boolean,
+    val message: String,
+    val status: MediaDownloadServices? = null,
+)
+
+data class MediaDownloadServices(
+    val enabled: Boolean = false,
+    // "running", "starting", "stopped", "failed", "notInstalled" or "external".
+    val services: String = "stopped",
+    val idleMinutes: Int = 5,
+    val vpn: MediaDownloadVpn = MediaDownloadVpn(),
+)
+
+// GET /api/media/downloads/status - decides whether "+ Add" is shown at all.
+data class MediaDownloadStatus(
+    val enabled: Boolean = false,
+    val canDownload: Boolean = false,
+    val canManageSites: Boolean = false,
+    val tmdbConfigured: Boolean = false,
+    // Whether a library on the server's own disks can receive a movie / a TV show.
+    val movieLibrary: Boolean = false,
+    val showLibrary: Boolean = false,
+    val status: MediaDownloadServices? = null,
+)
+
+// One TMDB match from /lookup.
+data class MediaLookupResult(
+    // "movie" or "show".
+    val kind: String,
+    val tmdbId: Long,
+    val title: String,
+    val year: Int? = null,
+    val overview: String? = null,
+    val posterPath: String? = null,
+    val posterUrl: String? = null,
+    val inLibrary: Boolean = false,
+    val itemId: String? = null,
+) {
+    val isShow: Boolean get() = kind == "show"
+}
+
+data class MediaLookup(val tmdbConfigured: Boolean, val results: List<MediaLookupResult> = emptyList())
+
+data class MediaDownloadEpisode(
+    val number: Int,
+    val name: String? = null,
+    val airDate: String? = null,
+    // False for an episode that is not out yet; missing reads as out.
+    val aired: Boolean = true,
+    val inLibrary: Boolean = false,
+)
+
+data class MediaDownloadSeason(
+    val number: Int,
+    val name: String,
+    val episodeCount: Int = 0,
+    val ownedCount: Int = 0,
+    val episodes: List<MediaDownloadEpisode> = emptyList(),
+) {
+    val isComplete: Boolean get() = episodeCount > 0 && ownedCount >= episodeCount
+}
+
+// GET /api/media/downloads/show/{tmdbId}.
+data class MediaDownloadShow(
+    val tmdbId: Long,
+    val title: String,
+    val year: Int? = null,
+    val overview: String? = null,
+    val posterPath: String? = null,
+    val posterUrl: String? = null,
+    val itemId: String? = null,
+    val seasons: List<MediaDownloadSeason> = emptyList(),
+)
+
+// The body of POST /api/media/downloads/search. `season` alone asks for a whole season;
+// `season` + `episode` for one episode.
+data class MediaReleaseSearchInput(
+    val kind: String,
+    val title: String,
+    val year: Int? = null,
+    val tmdbId: Long? = null,
+    val posterPath: String? = null,
+    val season: Int? = null,
+    val episode: Int? = null,
+) {
+    fun toJson(): JSONObject = JSONObject()
+        .put("kind", kind)
+        .put("title", title)
+        .put("year", year ?: JSONObject.NULL)
+        .put("tmdbId", tmdbId ?: JSONObject.NULL)
+        .put("posterPath", posterPath ?: JSONObject.NULL)
+        .put("season", season ?: JSONObject.NULL)
+        .put("episode", episode ?: JSONObject.NULL)
+
+    // "Dune: Part Two (2024)", "Bluey (2018) · S02E05", "Bluey (2018) · season 2".
+    val label: String
+        get() = buildString {
+            append(title)
+            year?.let { append(" ($it)") }
+            if (season != null) {
+                append(" · ")
+                append(if (episode != null) MediaDownloadFormat.episodeCode(season, episode) else "season $season")
+            }
+        }
+}
+
+data class MediaRelease(
+    val id: String,
+    val title: String,
+    val site: String? = null,
+    val sizeBytes: Long? = null,
+    val seeders: Int? = null,
+    val leechers: Int? = null,
+    val publishedAt: String? = null,
+    val quality: String? = null,
+    val codec: String? = null,
+    val source: String? = null,
+    val hdr: Boolean = false,
+    val season: Int? = null,
+    val episode: Int? = null,
+    val seasonPack: Boolean = false,
+    val matches: Boolean = true,
+    val warning: String? = null,
+) {
+    // The little tags under a release, in the web's order.
+    val chips: List<String>
+        get() = listOfNotNull(quality, codec, source, "HDR".takeIf { hdr }, "whole season".takeIf { seasonPack })
+}
+
+// GET /api/media/downloads/search/{id}, polled every second until done or failed.
+data class MediaReleaseSearch(
+    val id: String,
+    // "connecting", "searching", "done" or "failed".
+    val phase: String,
+    val message: String? = null,
+    val error: String? = null,
+    val kind: String? = null,
+    val title: String? = null,
+    val year: Int? = null,
+    val season: Int? = null,
+    val episode: Int? = null,
+    val results: List<MediaRelease> = emptyList(),
+    val others: List<MediaRelease> = emptyList(),
+) {
+    val isFinished: Boolean get() = phase == "done" || phase == "failed"
+}
+
+data class MediaDownload(
+    val id: String,
+    // "movie" or "episode".
+    val kind: String = "movie",
+    val title: String,
+    val year: Int? = null,
+    val tmdbId: Long? = null,
+    val season: Int? = null,
+    val episode: Int? = null,
+    // "S02E05", "Season 2" or null.
+    val subtitle: String? = null,
+    val posterUrl: String? = null,
+    val releaseTitle: String? = null,
+    val site: String? = null,
+    val sizeBytes: Long? = null,
+    // "queued", "downloading", "seeding", "importing", "done", "failed" or "canceled".
+    val state: String,
+    // 0-1.
+    val progress: Double = 0.0,
+    val downloadedBytes: Long? = null,
+    val speedBytesPerSecond: Long? = null,
+    val etaSeconds: Long? = null,
+    val peers: Int? = null,
+    // On an active download a note ("Waiting for the VPN to connect."), on a failed one the reason.
+    val error: String? = null,
+    val libraryId: String? = null,
+    val itemId: String? = null,
+    // The library item this download replaces (its files go once the new copy is filed); null
+    // for an ordinary download and on older servers.
+    val replacesItemId: String? = null,
+    val requestedBy: String? = null,
+    val createdAt: String? = null,
+    val completedAt: String? = null,
+    val finishedAt: String? = null,
+) {
+    val isActive: Boolean get() = MediaDownloadFormat.isActive(state)
+    val isDone: Boolean get() = state == "done"
+    val isFailed: Boolean get() = state == "failed"
+}
+
+// GET /api/media/downloads.
+data class MediaDownloadList(
+    val status: MediaDownloadServices? = null,
+    val active: List<MediaDownload> = emptyList(),
+    val recent: List<MediaDownload> = emptyList(),
+)
+
+// One of the household's torrent sites (Prowlarr indexers). Admin only.
+data class MediaDownloadSite(
+    val id: String,
+    val name: String,
+    val enabled: Boolean = true,
+    // "public", "semiPrivate" or "private".
+    val privacy: String? = null,
+    val language: String? = null,
+    val description: String? = null,
+    val definition: String? = null,
+)
+
+data class MediaSiteFieldOption(val value: String, val label: String)
+
+data class MediaSiteField(
+    val name: String,
+    val label: String,
+    // "text", "password", "checkbox", "select" or "number".
+    val type: String = "text",
+    val help: String? = null,
+    // The default, as text ("" for none); checkboxes use `checked`.
+    val value: String = "",
+    val checked: Boolean = false,
+    val options: List<MediaSiteFieldOption> = emptyList(),
+)
+
+// A site that can be added, from /sites/catalog.
+data class MediaSiteDefinition(
+    val definition: String,
+    val name: String,
+    val description: String? = null,
+    val privacy: String? = null,
+    val language: String? = null,
+    val needsSetup: Boolean = false,
+    val fields: List<MediaSiteField> = emptyList(),
+)
+
+// A sites route answered 503 { starting: true }: Prowlarr is inside the VPN, which is still
+// coming up. The screen shows the message and asks again.
+class MediaDownloadsStartingException(message: String) : Exception(message)
+
+// 409 existing: the copy of the movie the library already has.
+data class MediaExistingCopy(
+    val itemId: String? = null,
+    val title: String? = null,
+    val year: Int? = null,
+    val sizeBytes: Long? = null,
+    // The picture height in pixels (720, 1080, 2160), when known.
+    val height: Int? = null,
+    // False for a copy on another computer's share - only Keep both is offered then.
+    val canReplace: Boolean = false,
+)
+
+// POST /api/media/downloads answered 409 { code: "alreadyInLibrary" }: nothing was queued. The
+// screen asks, then sends the same body again with replace true (replace it) or false (keep both).
+class MediaAlreadyInLibraryException(message: String, val existing: MediaExistingCopy) : Exception(message)
+
+// ---------------- Parsing ----------------
+
+private fun JSONObject.dlString(key: String): String? =
+    if (!has(key) || isNull(key)) null else optString(key).takeIf { it.isNotBlank() }
+
+private fun JSONObject.dlInt(key: String): Int? =
+    if (!has(key) || isNull(key)) null else optInt(key)
+
+private fun JSONObject.dlLong(key: String): Long? =
+    if (!has(key) || isNull(key)) null else optLong(key)
+
+private fun JSONObject.dlObject(key: String): JSONObject? =
+    if (!has(key) || isNull(key)) null else optJSONObject(key)
+
+private fun JSONObject.dlArray(key: String): JSONArray? =
+    if (!has(key) || isNull(key)) null else optJSONArray(key)
+
+private fun <T> JSONArray?.dlObjects(parse: (JSONObject) -> T): List<T> {
+    val array = this ?: return emptyList()
+    return buildList { for (i in 0 until array.length()) array.optJSONObject(i)?.let { add(parse(it)) } }
+}
+
+internal fun parseMediaDownloadVpn(json: JSONObject?): MediaDownloadVpn {
+    json ?: return MediaDownloadVpn()
+    return MediaDownloadVpn(
+        state = json.dlString("state") ?: "unknown",
+        required = json.optBoolean("required", true),
+        ip = json.dlString("ip"),
+        location = json.dlString("location"),
+        country = json.dlString("country"),
+        provider = json.dlString("provider"),
+        verified = json.optBoolean("verified", false),
+        verifiedAt = json.dlString("verifiedAt"),
+        checkedAt = json.dlString("checkedAt"),
+        error = json.dlString("error"),
+        account = parseMediaVpnAccount(json.dlObject("account")),
+    )
+}
+
+internal fun parseMediaVpnAccount(json: JSONObject?): MediaVpnAccount? {
+    json ?: return null
+    return MediaVpnAccount(
+        provider = json.dlString("provider") ?: "mullvad",
+        paidUntil = json.dlString("paidUntil"),
+        daysLeft = json.dlInt("daysLeft") ?: 0,
+        runningOut = json.optBoolean("runningOut", false),
+        expired = json.optBoolean("expired", false),
+        checkedAt = json.dlString("checkedAt"),
+    )
+}
+
+internal fun parseMediaDownloadServices(json: JSONObject?): MediaDownloadServices? {
+    json ?: return null
+    return MediaDownloadServices(
+        enabled = json.optBoolean("enabled"),
+        services = json.dlString("services") ?: "stopped",
+        idleMinutes = json.optInt("idleMinutes", 5),
+        vpn = parseMediaDownloadVpn(json.dlObject("vpn")),
+    )
+}
+
+internal fun parseMediaDownloadStatus(json: JSONObject): MediaDownloadStatus = MediaDownloadStatus(
+    enabled = json.optBoolean("enabled"),
+    canDownload = json.optBoolean("canDownload"),
+    canManageSites = json.optBoolean("canManageSites"),
+    tmdbConfigured = json.optBoolean("tmdbConfigured"),
+    movieLibrary = json.optBoolean("movieLibrary"),
+    showLibrary = json.optBoolean("showLibrary"),
+    status = parseMediaDownloadServices(json.dlObject("status")),
+)
+
+internal fun parseMediaLookupResult(json: JSONObject): MediaLookupResult = MediaLookupResult(
+    kind = json.dlString("kind") ?: "movie",
+    tmdbId = json.optLong("tmdbId"),
+    title = json.optString("title"),
+    year = json.dlInt("year"),
+    overview = json.dlString("overview"),
+    posterPath = json.dlString("posterPath"),
+    posterUrl = json.dlString("posterUrl"),
+    inLibrary = json.optBoolean("inLibrary"),
+    itemId = json.dlString("itemId"),
+)
+
+internal fun parseMediaLookup(json: JSONObject): MediaLookup {
+    val configured = json.optBoolean("tmdbConfigured", true)
+    return MediaLookup(
+        tmdbConfigured = configured,
+        results = if (configured) json.dlArray("results").dlObjects(::parseMediaLookupResult) else emptyList(),
+    )
+}
+
+internal fun parseMediaDownloadEpisode(json: JSONObject): MediaDownloadEpisode = MediaDownloadEpisode(
+    number = json.optInt("number"),
+    name = json.dlString("name"),
+    airDate = json.dlString("airDate"),
+    aired = json.optBoolean("aired", true),
+    inLibrary = json.optBoolean("inLibrary"),
+)
+
+internal fun parseMediaDownloadSeason(json: JSONObject): MediaDownloadSeason {
+    val number = json.optInt("number")
+    val episodes = json.dlArray("episodes").dlObjects(::parseMediaDownloadEpisode)
+    return MediaDownloadSeason(
+        number = number,
+        name = json.dlString("name") ?: if (number == 0) "Specials" else "Season $number",
+        episodeCount = json.dlInt("episodeCount") ?: episodes.size,
+        ownedCount = json.optInt("ownedCount"),
+        episodes = episodes,
+    )
+}
+
+internal fun parseMediaDownloadShow(json: JSONObject): MediaDownloadShow = MediaDownloadShow(
+    tmdbId = json.optLong("tmdbId"),
+    title = json.optString("title"),
+    year = json.dlInt("year"),
+    overview = json.dlString("overview"),
+    posterPath = json.dlString("posterPath"),
+    posterUrl = json.dlString("posterUrl"),
+    itemId = json.dlString("itemId"),
+    seasons = json.dlArray("seasons").dlObjects(::parseMediaDownloadSeason),
+)
+
+internal fun parseMediaRelease(json: JSONObject): MediaRelease = MediaRelease(
+    id = json.optString("id"),
+    title = json.optString("title"),
+    site = json.dlString("site"),
+    sizeBytes = json.dlLong("sizeBytes"),
+    seeders = json.dlInt("seeders"),
+    leechers = json.dlInt("leechers"),
+    publishedAt = json.dlString("publishedAt"),
+    quality = json.dlString("quality"),
+    codec = json.dlString("codec"),
+    source = json.dlString("source"),
+    hdr = json.optBoolean("hdr"),
+    season = json.dlInt("season"),
+    episode = json.dlInt("episode"),
+    seasonPack = json.optBoolean("seasonPack"),
+    matches = json.optBoolean("matches", true),
+    warning = json.dlString("warning"),
+)
+
+internal fun parseMediaReleaseSearch(json: JSONObject): MediaReleaseSearch = MediaReleaseSearch(
+    id = json.optString("id"),
+    phase = json.dlString("phase") ?: "connecting",
+    message = json.dlString("message"),
+    error = json.dlString("error"),
+    kind = json.dlString("kind"),
+    title = json.dlString("title"),
+    year = json.dlInt("year"),
+    season = json.dlInt("season"),
+    episode = json.dlInt("episode"),
+    results = json.dlArray("results").dlObjects(::parseMediaRelease),
+    others = json.dlArray("others").dlObjects(::parseMediaRelease),
+)
+
+internal fun parseMediaDownload(json: JSONObject): MediaDownload = MediaDownload(
+    id = json.optString("id"),
+    kind = json.dlString("kind") ?: "movie",
+    title = json.optString("title"),
+    year = json.dlInt("year"),
+    tmdbId = json.dlLong("tmdbId"),
+    season = json.dlInt("season"),
+    episode = json.dlInt("episode"),
+    subtitle = json.dlString("subtitle"),
+    posterUrl = json.dlString("posterUrl"),
+    releaseTitle = json.dlString("releaseTitle"),
+    site = json.dlString("site"),
+    sizeBytes = json.dlLong("sizeBytes"),
+    state = json.dlString("state") ?: "queued",
+    progress = json.optDouble("progress", 0.0).takeUnless { it.isNaN() } ?: 0.0,
+    downloadedBytes = json.dlLong("downloadedBytes"),
+    speedBytesPerSecond = json.dlLong("speedBytesPerSecond"),
+    etaSeconds = json.dlLong("etaSeconds"),
+    peers = json.dlInt("peers"),
+    error = json.dlString("error"),
+    libraryId = json.dlString("libraryId"),
+    itemId = json.dlString("itemId"),
+    replacesItemId = json.dlString("replacesItemId"),
+    requestedBy = json.dlString("requestedBy"),
+    createdAt = json.dlString("createdAt"),
+    completedAt = json.dlString("completedAt"),
+    finishedAt = json.dlString("finishedAt"),
+)
+
+internal fun parseMediaDownloadList(json: JSONObject): MediaDownloadList = MediaDownloadList(
+    status = parseMediaDownloadServices(json.dlObject("status")),
+    active = json.dlArray("active").dlObjects(::parseMediaDownload),
+    recent = json.dlArray("recent").dlObjects(::parseMediaDownload),
+)
+
+internal fun parseMediaDownloadSite(json: JSONObject): MediaDownloadSite = MediaDownloadSite(
+    id = json.optString("id"),
+    name = json.dlString("name") ?: json.optString("definition"),
+    enabled = json.optBoolean("enabled", true),
+    privacy = json.dlString("privacy"),
+    language = json.dlString("language"),
+    description = json.dlString("description"),
+    definition = json.dlString("definition"),
+)
+
+internal fun parseMediaDownloadSites(array: JSONArray?): List<MediaDownloadSite> = array.dlObjects(::parseMediaDownloadSite)
+
+internal fun parseMediaSiteField(json: JSONObject): MediaSiteField {
+    val raw = if (!json.has("value") || json.isNull("value")) null else json.opt("value")
+    return MediaSiteField(
+        name = json.optString("name"),
+        label = json.dlString("label") ?: json.optString("name"),
+        type = json.dlString("type") ?: "text",
+        help = json.dlString("help"),
+        value = when (raw) {
+            null, is Boolean -> ""
+            else -> raw.toString()
+        },
+        checked = raw == true,
+        options = json.dlArray("options").dlObjects { option ->
+            val value = if (option.isNull("value")) "" else option.opt("value")?.toString().orEmpty()
+            MediaSiteFieldOption(value = value, label = option.dlString("label") ?: value)
+        },
+    )
+}
+
+internal fun parseMediaSiteDefinition(json: JSONObject): MediaSiteDefinition = MediaSiteDefinition(
+    definition = json.optString("definition"),
+    name = json.dlString("name") ?: json.optString("definition"),
+    description = json.dlString("description"),
+    privacy = json.dlString("privacy"),
+    language = json.dlString("language"),
+    needsSetup = json.optBoolean("needsSetup"),
+    fields = json.dlArray("fields").dlObjects(::parseMediaSiteField),
+)
+
+internal fun parseMediaSiteCatalog(array: JSONArray?): List<MediaSiteDefinition> = array.dlObjects(::parseMediaSiteDefinition)
+
+// A sites route's 503 body: { error, starting: true } while the VPN comes up.
+internal fun parseMediaVpnTestResult(json: JSONObject): MediaVpnTestResult {
+    val ok = json.optBoolean("ok", false)
+    return MediaVpnTestResult(
+        ok = ok,
+        message = json.dlString("message") ?: if (ok) "The VPN is working." else "The VPN test failed.",
+        status = parseMediaDownloadServices(json.dlObject("status")),
+    )
+}
+
+internal fun parseMediaDownloadsStarting(body: String): MediaDownloadsStartingException? {
+    val json = runCatching { JSONObject(body) }.getOrNull() ?: return null
+    if (!json.optBoolean("starting")) return null
+    return MediaDownloadsStartingException(json.dlString("error") ?: "Connecting to the VPN... try again in a moment.")
+}
+
+// The grab's 409 body; null unless it is { code: "alreadyInLibrary" }.
+internal fun parseMediaAlreadyInLibrary(body: String): MediaAlreadyInLibraryException? {
+    val json = runCatching { JSONObject(body) }.getOrNull() ?: return null
+    if (json.dlString("code") != "alreadyInLibrary") return null
+    val existing = json.dlObject("existing")?.let {
+        MediaExistingCopy(
+            itemId = it.dlString("itemId"),
+            title = it.dlString("title"),
+            year = it.dlInt("year"),
+            sizeBytes = it.dlLong("sizeBytes"),
+            height = it.dlInt("height"),
+            canReplace = it.optBoolean("canReplace", false),
+        )
+    } ?: MediaExistingCopy()
+    return MediaAlreadyInLibraryException(json.dlString("error") ?: "You already have this movie.", existing)
+}
+
+// ---------------- Requests ----------------
+
+internal object MediaDownloadApi {
+    const val STATUS_PATH = "/api/media/downloads/status"
+    const val DOWNLOADS_PATH = "/api/media/downloads"
+    const val SEARCH_PATH = "/api/media/downloads/search"
+    const val SITES_PATH = "/api/media/downloads/sites"
+    const val VPN_TEST_PATH = "/api/media/downloads/vpn/test"
+
+    private fun segment(value: String): String = URLEncoder.encode(value, "UTF-8").replace("+", "%20")
+    private fun query(value: String): String = URLEncoder.encode(value, "UTF-8")
+
+    fun lookupPath(query: String, kind: String): String =
+        "/api/media/downloads/lookup?q=${query(query.trim())}&kind=${query(kind)}"
+
+    fun showPath(tmdbId: Long): String = "/api/media/downloads/show/$tmdbId"
+
+    fun searchPath(id: String): String = "$SEARCH_PATH/${segment(id)}"
+
+    fun downloadPath(id: String): String = "$DOWNLOADS_PATH/${segment(id)}"
+
+    fun retryPath(id: String): String = downloadPath(id) + "/retry"
+
+    fun sitePath(id: String): String = "$SITES_PATH/${segment(id)}"
+
+    fun catalogPath(query: String): String = "$SITES_PATH/catalog?q=${query(query.trim())}"
+
+    // `replace` is left out until the server has asked (409 alreadyInLibrary): absent means "ask me".
+    fun grabBody(searchId: String, releaseId: String, libraryId: String? = null, replace: Boolean? = null): JSONObject =
+        JSONObject()
+            .put("searchId", searchId)
+            .put("releaseId", releaseId)
+            .put("libraryId", libraryId ?: JSONObject.NULL)
+            .apply { if (replace != null) put("replace", replace) }
+
+    // The site form's answers, typed the way the web sends them: checkboxes as booleans, numbers
+    // as numbers (blank = null), a select whose value is a whole number as a number.
+    fun siteFieldsJson(fields: List<MediaSiteField>, values: Map<String, String>, checks: Map<String, Boolean>): JSONObject {
+        val json = JSONObject()
+        for (field in fields) {
+            when (field.type) {
+                "checkbox" -> json.put(field.name, checks[field.name] ?: field.checked)
+                "number" -> {
+                    val text = (values[field.name] ?: field.value).trim()
+                    json.put(field.name, text.toLongOrNull() ?: text.toDoubleOrNull() ?: JSONObject.NULL)
+                }
+                "select" -> {
+                    val text = values[field.name] ?: field.value
+                    json.put(field.name, if (Regex("^-?\\d+$").matches(text)) text.toLong() else text)
+                }
+                else -> json.put(field.name, values[field.name] ?: field.value)
+            }
+        }
+        return json
+    }
+
+    fun addSiteBody(definition: String, fields: JSONObject): JSONObject = JSONObject()
+        .put("definition", definition)
+        .put("name", JSONObject.NULL)
+        .put("fields", fields)
+}
+
+// ---------------- Wording ----------------
+
+// ON green (connected and verified), BUSY cyan pulsing (coming up / checking), IDLE grey (off
+// until needed - the normal resting state), OFF amber (Use VPN turned off in Settings), BAD red.
+enum class VpnTone { ON, BUSY, IDLE, OFF, BAD }
+
+data class VpnLook(val tone: VpnTone, val short: String, val text: String)
+
+// The Downloads screen's account line under the light: IDLE plain, OFF amber, BAD red.
+data class VpnAccountLine(val tone: VpnTone, val text: String)
+
+internal object MediaDownloadFormat {
+    private val ACTIVE = setOf("queued", "downloading", "seeding", "importing")
+
+    fun isActive(state: String): Boolean = state in ACTIVE
+
+    fun stateWord(state: String): String = when (state) {
+        "queued" -> "waiting"
+        "downloading" -> "downloading"
+        "seeding" -> "sharing back"
+        "importing" -> "adding to library"
+        "done" -> "ready"
+        "failed" -> "failed"
+        "canceled" -> "canceled"
+        else -> state
+    }
+
+    fun episodeCode(season: Int, episode: Int): String = "S%02dE%02d".format(season, episode)
+
+    // "3.1 MB/s" / "640 KB/s", or null when nothing is moving.
+    fun speedLabel(bytesPerSecond: Long?): String? {
+        val bytes = bytesPerSecond ?: return null
+        if (bytes <= 0) return null
+        if (bytes >= 1_000_000) return "%.1f MB/s".format(bytes / 1_000_000.0)
+        return "${maxOf(1L, Math.round(bytes / 1_000.0))} KB/s"
+    }
+
+    fun etaLabel(seconds: Long?): String? {
+        val s = seconds ?: return null
+        if (s <= 0) return null
+        if (s < 90) return "about a minute left"
+        if (s < 3600) return "${Math.round(s / 60.0)} min left"
+        return "${s / 3600} h ${Math.round((s % 3600) / 60.0)} min left"
+    }
+
+    fun sizeLabel(bytes: Long?): String? = bytes?.takeIf { it > 0 }?.let(MediaPlaybackMath::formatSize)
+
+    fun percentLabel(progress: Double): String {
+        val tenths = Math.round(progress.coerceIn(0.0, 1.0) * 1000) / 10.0
+        return if (tenths % 1.0 == 0.0) "${tenths.toLong()}%" else "$tenths%"
+    }
+
+    fun plural(count: Int, noun: String): String = if (count == 1) "1 $noun" else "$count ${noun}s"
+
+    // "720p · 1.4 GB" for the copy the library has, or null when the server knows neither.
+    fun existingCopyLabel(existing: MediaExistingCopy): String? =
+        listOfNotNull(existing.height?.takeIf { it > 0 }?.let { "${it}p" }, sizeLabel(existing.sizeBytes))
+            .joinToString(" · ")
+            .ifEmpty { null }
+
+    // The already-in-library dialog's body.
+    fun alreadyInLibraryText(existing: MediaExistingCopy): String {
+        val have = existingCopyLabel(existing)?.let { "The copy you have is $it. " }.orEmpty()
+        return if (existing.canReplace) {
+            have + "Replace it with this download? The old copy is deleted once the new one has downloaded."
+        } else {
+            have + "It is on another computer's share, so it can't be replaced from here. Download this one as well?"
+        }
+    }
+
+    // "Downloading Bluey S02E05 · 42%", or "2 downloads in progress".
+    fun bannerText(active: List<MediaDownload>): String? {
+        val first = active.firstOrNull() ?: return null
+        if (active.size > 1) return "${active.size} downloads in progress"
+        val pct = Math.round(first.progress.coerceIn(0.0, 1.0) * 100)
+        return "Downloading ${first.title}${first.subtitle?.let { " $it" }.orEmpty()} · $pct%"
+    }
+
+    // The VPN light (Movies top bar) and the Downloads screen's VPN line - the doc's "The VPN
+    // light" table, in the order the web's vpnLook checks it. `short` is the chip, `text` the line.
+    fun vpnLook(
+        status: MediaDownloadServices?,
+        now: Instant = Instant.now(),
+        zone: ZoneId = ZoneId.systemDefault(),
+    ): VpnLook? {
+        status ?: return null
+        val vpn = status.vpn
+        val services = status.services
+        if (vpn.state == "disabled") {
+            return VpnLook(
+                VpnTone.OFF,
+                "VPN off",
+                "Turned off in Settings · searching and downloading use your home connection, so the sites see your home address.",
+            )
+        }
+        if (services == "notInstalled") {
+            return VpnLook(
+                VpnTone.BAD,
+                "VPN not set up",
+                "The VPN and torrent services are not installed on the server yet. Run core/downloads/install-downloads.sh on it once.",
+            )
+        }
+        if (vpn.account?.expired == true) {
+            val on = accountDate(vpn.account.paidUntil, now, zone)?.let { " on $it" }.orEmpty()
+            return VpnLook(
+                VpnTone.BAD,
+                "VPN out of time",
+                "Your Mullvad account ran out of time$on. Add time at mullvad.net and downloads work again.",
+            )
+        }
+        if (vpn.state == "connected") {
+            val where = listOfNotNull(vpn.location, vpn.ip).joinToString("") { " · $it" }
+            return if (vpn.verified) {
+                VpnLook(
+                    VpnTone.ON,
+                    vpn.country?.let { "VPN · $it" } ?: "VPN on",
+                    "Connected and verified$where · your home address is hidden",
+                )
+            } else {
+                VpnLook(VpnTone.BUSY, "VPN checking", "Connected$where · checking it hides your home address…")
+            }
+        }
+        if (services == "starting" || vpn.state == "connecting") return VpnLook(VpnTone.BUSY, "VPN connecting", "Connecting…")
+        if (services == "failed" || vpn.state == "down") {
+            return VpnLook(
+                VpnTone.BAD,
+                "VPN problem",
+                vpn.error ?: "The VPN or torrent services failed to start. Check the server's log (journalctl -u reelhouse-vpn).",
+            )
+        }
+        if (services == "external") {
+            return VpnLook(
+                VpnTone.IDLE,
+                "VPN idle",
+                "qBittorrent and Prowlarr are run outside this server; the VPN is checked when they are used.",
+            )
+        }
+        return VpnLook(
+            VpnTone.IDLE,
+            "VPN idle",
+            "Off until someone searches or downloads, then it connects by itself. Press Test to check it now.",
+        )
+    }
+
+    // The doc's "account line" table: plain while paid, amber when running out, red once out.
+    fun vpnAccountLine(
+        account: MediaVpnAccount?,
+        now: Instant = Instant.now(),
+        zone: ZoneId = ZoneId.systemDefault(),
+    ): VpnAccountLine? {
+        account ?: return null
+        val date = accountDate(account.paidUntil, now, zone)
+        if (account.expired) {
+            return VpnAccountLine(VpnTone.BAD, "Mullvad ran out${date?.let { " on $it" }.orEmpty()} · add time at mullvad.net")
+        }
+        val days = maxOf(0, account.daysLeft)
+        if (account.runningOut) {
+            val left = when (days) {
+                0 -> "today"
+                1 -> "tomorrow"
+                else -> "in $days days"
+            }
+            return VpnAccountLine(VpnTone.OFF, "Mullvad runs out $left${date?.let { " ($it)" }.orEmpty()} · add time at mullvad.net")
+        }
+        val left = if (days == 0) "less than a day left" else "${plural(days, "day")} left"
+        return VpnAccountLine(VpnTone.IDLE, "Mullvad ${date?.let { "paid until $it" } ?: "paid"} · $left")
+    }
+
+    // paidUntil as the device's local date: "Oct 27", or "Oct 27, 2027" when not this year.
+    // Null when missing or unreadable.
+    fun accountDate(paidUntil: String?, now: Instant, zone: ZoneId): String? {
+        val text = paidUntil ?: return null
+        val date = runCatching { OffsetDateTime.parse(text).toInstant() }.getOrNull()?.atZone(zone)?.toLocalDate() ?: return null
+        val day = date.format(DateTimeFormatter.ofPattern("MMM d", Locale.ENGLISH))
+        return if (date.year == now.atZone(zone).year) day else "$day, ${date.year}"
+    }
+
+    // The amber note at the top of Add while Use VPN is off in Settings.
+    fun vpnOffNote(status: MediaDownloadStatus?): String? =
+        if (status?.status?.vpn?.state == "disabled") {
+            "The VPN is turned off in Settings, so the sites and everyone sharing will see your home address."
+        } else null
+
+    // The season the picker opens on: the first real season with an aired episode the library
+    // lacks, else the first listed.
+    fun startingSeason(show: MediaDownloadShow): Int? =
+        (show.seasons.firstOrNull { season -> season.number > 0 && season.episodes.any { it.aired && !it.inLibrary } }
+            ?: show.seasons.firstOrNull())?.number
+
+    fun seasonTabLabel(season: MediaDownloadSeason): String =
+        (if (season.number == 0) "Specials" else "S${season.number}") + if (season.isComplete) " ✓" else ""
+
+    fun privacyLabel(privacy: String?): String? = when (privacy) {
+        null -> null
+        "public" -> "public"
+        "semiPrivate" -> "semi-private"
+        "private" -> "private"
+        else -> privacy
+    }
+
+    // A lookup that says there is no TMDB key has nothing to pick from, so Find goes straight on
+    // to searching the sites for the typed text (the web's lookup() -> directSearch()).
+    fun searchSitesDirectly(lookup: MediaLookup): Boolean = !lookup.tmdbConfigured
+
+    // What "Search sites for …" (and Find without TMDB) asks for: exactly the typed title, plus for
+    // TV a season when one is given and an episode only alongside a season. Null when nothing typed.
+    fun directSearchInput(kind: String, typed: String, seasonText: String, episodeText: String): MediaReleaseSearchInput? {
+        val title = typed.trim()
+        if (title.isEmpty()) return null
+        val season = if (kind == "show") wholeNumber(seasonText) else null
+        val episode = if (season != null) wholeNumber(episodeText) else null
+        return MediaReleaseSearchInput(kind, title, season = season, episode = episode)
+    }
+
+    // Digits only, like the web's /^\d+$/ check on the season / episode boxes.
+    fun wholeNumber(text: String): Int? = text.trim().takeIf { it.matches(Regex("^\\d+$")) }?.toIntOrNull()
+
+    // What can be downloaded, and what each kind is called: the Add screen's Movie / TV show
+    // switch and the search offer's labels and buttons all come from here. Music gets a row when
+    // it can be downloaded.
+    val DOWNLOAD_KINDS: List<Pair<String, String>> = listOf("movie" to "Movie", "show" to "TV show")
+
+    fun kindLabel(kind: String): String? = DOWNLOAD_KINDS.firstOrNull { it.first == kind }?.second
+
+    // ---- Search offers a download (an empty library search asks to download what was typed) ----
+
+    const val OFFER_LIMIT = 6
+
+    // The offer shows when the library found nothing for at least two typed characters, no other
+    // filter (genre, unwatched, My List) could be the reason it found nothing, and this user may
+    // download.
+    fun offersDownload(typed: String, libraryEmpty: Boolean, filtered: Boolean, canDownload: Boolean): Boolean =
+        typed.trim().length >= 2 && libraryEmpty && !filtered && canDownload
+
+    // A kind=any lookup's rows for the offer: kinds this app can't download yet are skipped (the
+    // server adds music there one day), then the first six.
+    fun offerResults(lookup: MediaLookup): List<MediaLookupResult> =
+        lookup.results.filter { kindLabel(it.kind) != null }.take(OFFER_LIMIT)
+}

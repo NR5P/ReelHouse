@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ReelHouse</title>
+  <link rel="icon" href="icons/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" href="icons/icon-32.png" sizes="32x32" />
+  <link rel="icon" type="image/png" href="icons/icon-16.png" sizes="16x16" />
+  <!-- iOS ignores the manifest for home-screen icons and uses this instead. -->
+  <link rel="apple-touch-icon" href="icons/icon-180.png" />
+  <link rel="manifest" href="site.webmanifest" />
+  <meta name="theme-color" content="#05070a" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="scanlines" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <img src="icons/icon-192.png" alt="" class="brand-icon" aria-hidden="true" />
+      <span class="brand-glyph" aria-hidden="true">&#127871;</span>
+      <span class="brand-name">ReelHouse</span>
+    </div>
+    <nav class="tabs" id="tabs">
+      <button class="tab hidden" id="tab-movies" data-view="movies" data-tip-below data-tip="Your own movies and TV shows, scanned from folders on the server and played here and in every app. Watched state is per person. Only appears when Movies &amp; TV is turned on in Settings.">movies</button>
+      <button class="tab hidden" id="tab-music" data-view="music" data-tip-below data-tip="The household's own music, from folders on the server or another computer: albums, artists, playlists, radio, lyrics. Keeps playing while you look at other tabs. Only appears when Music is turned on in Settings.">music</button>
+      <button class="tab hidden" id="tab-podcasts" data-view="podcasts" data-tip-below data-tip="Podcasts the server downloads and keeps for you, with Up Next, transcripts, bookmarks and clips. Your place follows you to every device. Only appears when Podcasts are turned on in Settings.">podcasts</button>
+      <button class="tab" id="tab-settings" data-view="settings" data-tip-below data-tip-right data-tip="Libraries, downloads, email, sign-in and the server's address. Most changes apply live.">settings</button>
+      <button class="tab hidden" id="tab-accounts" data-view="accounts" data-tip-below data-tip-right data-tip="Your account, and (for admins) every account that can sign in to ReelHouse.">accounts</button>
+    </nav>
+    <div class="status" id="status" data-tip-below data-tip-right data-tip="Whether this page can currently reach the server.">
+      <span class="status-dot" id="status-dot"></span>
+      <span id="status-text">connecting&hellip;</span>
+    </div>
+    <button id="logout-btn" class="btn hidden" data-tip-below data-tip-right data-tip="Sign out of ReelHouse on this browser.">logout</button>
+  </header>
+
+  <div id="exposure-banner" class="exposure-banner hidden"></div>
+
+  <main>
+    <!-- Shown only until one of the tabs is opened: when Movies, Music and Podcasts are all off
+         and the visitor can't open Settings, this is the whole page. -->
+    <section id="view-empty" class="view">
+      <div class="empty-state" id="empty-view-text">loading&hellip;</div>
+    </section>
+
+    <section id="view-movies" class="view hidden">
+      <div class="toolbar">
+        <div class="toolbar-label">MOVIES &amp; TV</div>
+        <div class="toolbar-actions">
+          <span id="mv-scan-state" class="event-count hidden" data-tip-below data-tip-right data-tip="A library scan is running. Playback keeps working while it does."></span>
+          <button id="mv-vpn-light" class="btn mv-vpn-light hidden" data-mv-pane="downloads" data-tip-below data-tip-right data-tip="The VPN that movie downloads go through. Green: connected and proven to hide your home address. Grey: switched off until someone searches or downloads. Amber: turned off in Settings. Red: something is wrong. Click for details and a test."><span class="mv-vpn-dot"></span><span class="mv-vpn-light-text">VPN</span></button>
+          <button id="mv-add-btn" class="btn btn-on hidden" data-tip-below data-tip-right data-tip="Find a movie or TV episodes on your torrent sites and download them into the library, through the VPN.">+ add</button>
+          <button id="mv-libraries-btn" class="btn hidden" data-tip-below data-tip-right data-tip="The folders this library is built from: add, rescan, edit or remove them.">&#9881; libraries</button>
+        </div>
+      </div>
+      <div class="mv-bar">
+        <nav class="tabs" id="mv-subtabs">
+          <button class="tab active" data-mv-pane="home">home</button>
+          <button class="tab" data-mv-pane="movies">movies</button>
+          <button class="tab" data-mv-pane="shows">tv shows</button>
+          <button class="tab hidden" id="mv-downloads-tab" data-mv-pane="downloads">downloads</button>
+        </nav>
+        <button id="mv-surprise-btn" class="btn" data-act="surprise" data-tip-below data-tip-right data-tip="Open something at random, from the movies or shows you are looking at. Unwatched titles come first.">surprise me</button>
+      </div>
+      <div id="mv-pane-home" class="tab-pane mv-pane"></div>
+      <div id="mv-pane-movies" class="tab-pane mv-pane hidden"></div>
+      <div id="mv-pane-shows" class="tab-pane mv-pane hidden"></div>
+      <div id="mv-pane-detail" class="tab-pane mv-pane hidden"></div>
+      <div id="mv-pane-libraries" class="tab-pane mv-pane hidden"></div>
+      <div id="mv-pane-downloads" class="tab-pane mv-pane hidden"></div>
+    </section>
+
+    <section id="view-music" class="view hidden au-view">
+      <div class="toolbar">
+        <div class="toolbar-label">MUSIC</div>
+        <div class="toolbar-actions">
+          <span id="mu-scan-state" class="event-count au-scan-state hidden" data-tip-below data-tip-right data-tip="A library scan is running. Playing keeps working while it does."></span>
+          <button id="mu-add-btn" class="btn btn-on hidden" data-tip-below data-tip-right data-tip="Find an album on your torrent sites and download it into the music library, through the same VPN as Movies.">+ add</button>
+          <button id="mu-alarms-btn" class="btn" data-tip-below data-tip-right data-tip="Wake-up alarms: music or a podcast that fades up on a speaker at a set time.">alarms</button>
+          <button id="mu-libraries-btn" class="btn hidden" data-tip-below data-tip-right data-tip="The folders the music library is built from - in Settings → Music.">&#9881; libraries</button>
+        </div>
+      </div>
+      <div class="mv-bar au-navbar">
+        <nav class="tabs au-subtabs" id="mu-subtabs">
+          <button class="tab active" data-mu-nav="home">home</button>
+          <button class="tab" data-mu-nav="artists">artists</button>
+          <button class="tab" data-mu-nav="albums">albums</button>
+          <button class="tab" data-mu-nav="songs">songs</button>
+          <button class="tab" data-mu-nav="genres">genres</button>
+          <button class="tab" data-mu-nav="playlists">playlists</button>
+          <button class="tab" data-mu-nav="folders">folders</button>
+          <button class="tab" data-mu-nav="stats">stats</button>
+          <button class="tab hidden" data-mu-nav="suggestions">suggested</button>
+          <button class="tab hidden" data-mu-nav="downloads">downloads</button>
+        </nav>
+        <div class="au-nav-tools">
+          <label class="mv-search au-nav-search"><svg class="mv-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 16l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg><input type="search" class="field-input" id="mu-search" placeholder="Search music" autocomplete="off" aria-label="Search music"></label>
+          <button id="mu-shuffle-btn" class="btn" title="Shuffle the whole library">shuffle all</button>
+        </div>
+      </div>
+      <div id="mu-content" class="au-content"></div>
+    </section>
+
+    <section id="view-podcasts" class="view hidden au-view">
+      <div class="toolbar">
+        <div class="toolbar-label">PODCASTS</div>
+        <div class="toolbar-actions">
+          <button id="pc-fill-btn" class="btn" data-tip-below data-tip-right data-tip="Fill my drive: say how many minutes you have and unplayed episodes that fit are lined up.">fill my drive</button>
+          <button id="pc-briefing-btn" class="btn" data-tip-below data-tip-right data-tip="Morning Briefing: today's date read out, then the newest episodes of the shows you picked.">briefing</button>
+          <button id="pc-alarms-btn" class="btn" data-tip-below data-tip-right data-tip="Wake-up alarms: music or a podcast that fades up on a speaker at a set time.">alarms</button>
+          <button id="pc-settings-btn" class="btn hidden" data-tip-below data-tip-right data-tip="Download folder, storage, transcripts and OPML - in Settings → Podcasts.">&#9881; settings</button>
+        </div>
+      </div>
+      <div class="mv-bar au-navbar">
+        <nav class="tabs au-subtabs" id="pc-subtabs">
+          <button class="tab active" data-pc-nav="home">listen now</button>
+          <button class="tab" data-pc-nav="upnext">up next</button>
+          <button class="tab" data-pc-nav="shows">shows</button>
+          <button class="tab" data-pc-nav="discover">discover</button>
+          <button class="tab" data-pc-nav="bookmarks">bookmarks</button>
+          <button class="tab" data-pc-nav="clips">clips</button>
+          <button class="tab" data-pc-nav="stats">stats</button>
+        </nav>
+        <div class="au-nav-tools">
+          <label class="mv-search au-nav-search"><svg class="mv-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 16l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg><input type="search" class="field-input" id="pc-search" placeholder="Search what was said" autocomplete="off" aria-label="Search every transcript"></label>
+        </div>
+      </div>
+      <div id="pc-content" class="au-content"></div>
+    </section>
+
+    <section id="view-settings" class="view hidden">
+      <div class="toolbar">
+        <div class="toolbar-label">SETTINGS</div>
+        <div class="toolbar-actions">
+          <span class="event-count settings-live-note">most changes apply live</span>
+          <input type="search" id="settings-search" class="settings-search" placeholder="search settings…"
+                 autocomplete="off" spellcheck="false"
+                 data-tip-right data-tip="Filters by setting name and by the explanation under it, so plain words work - try 'vpn', 'password', or 'port'. While searching, advanced settings are shown whatever the switch says." />
+          <label class="mode-switch" data-tip-right data-tip="Basic shows the settings most people actually change. Advanced adds every tuning option - nothing is lost either way, and this choice is remembered on this device only.">
+            <span id="mode-label" class="mode-label">basic</span>
+            <span class="switch"><input type="checkbox" id="advanced-mode-toggle"><span class="switch-track"></span></span>
+          </label>
+        </div>
+      </div>
+
+      <div id="settings-root" class="settings-root">
+        <div class="empty-state">loading settings&hellip;</div>
+      </div>
+    </section>
+
+    <section id="view-accounts" class="view hidden">
+      <div class="toolbar">
+        <div class="toolbar-label">ACCOUNTS</div>
+      </div>
+
+      <div id="accounts-root" class="settings-root">
+        <div class="empty-state">loading accounts&hellip;</div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <span id="build-version" class="build-version" data-tip="The exact build of ReelHouse this server is running, including the source commit it was compiled from. Quote this when reporting a problem.">&nbsp;</span>
+  </footer>
+
+  <div id="setup-wizard" class="lightbox hidden">
+    <div class="zone-editor-panel wizard-panel">
+      <div class="zone-editor-header">
+        <span id="wizard-title">WELCOME</span>
+        <span id="wizard-step-count" class="event-count"></span>
+      </div>
+      <div id="wizard-body" class="wizard-body"></div>
+      <div class="zone-editor-footer">
+        <button id="wizard-back-btn" class="btn">back</button>
+        <button id="wizard-skip-btn" class="btn">skip</button>
+        <button id="wizard-next-btn" class="btn">next</button>
+        <ul class="field-errors" id="wizard-errors"></ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- No backdrop-click-to-close and no skip button (unlike #setup-wizard) - a login that's
+       actually required has to be completed, not dismissed. -->
+  <div id="login-gate" class="lightbox hidden">
+    <div class="zone-editor-panel wizard-panel">
+      <div class="zone-editor-header">
+        <span id="login-title">SIGN IN</span>
+      </div>
+      <div class="wizard-body">
+        <p id="login-intro">Sign in to ReelHouse.</p>
+        <div class="field-row field-row-wide">
+          <label class="field-label" for="login-username">Username</label>
+          <input type="text" class="field-input" id="login-username" autocomplete="username" />
+        </div>
+        <div class="field-row field-row-wide">
+          <label class="field-label" for="login-password">Password</label>
+          <input type="password" class="field-input" id="login-password" autocomplete="current-password" />
+        </div>
+        <div class="field-row field-row-wide hidden" id="login-confirm-row">
+          <label class="field-label" for="login-confirm">Confirm Password</label>
+          <input type="password" class="field-input" id="login-confirm" autocomplete="new-password" />
+        </div>
+      </div>
+      <div class="zone-editor-footer">
+        <button id="login-submit-btn" class="btn">sign in</button>
+        <ul class="field-errors" id="login-errors"></ul>
+      </div>
+    </div>
+  </div>
+
+  <div id="mv-modal" class="lightbox hidden">
+    <div class="zone-editor-panel mv-modal-panel" id="mv-modal-panel"></div>
+  </div>
+
+  <!-- The Movies player. Fixed and full-screen, above everything but the toast; the browser's
+       own transport controls do the seeking and volume, this only adds the title bar, the
+       "up next" card and an error card. -->
+  <div id="mv-player" class="mv-player hidden" aria-hidden="true">
+    <video id="mv-video" controls playsinline crossorigin="use-credentials"></video>
+    <div class="mv-player-top">
+      <div class="mv-player-titles">
+        <div class="mv-player-title" id="mv-player-title"></div>
+        <div class="mv-player-sub" id="mv-player-sub"></div>
+      </div>
+      <div class="mv-player-time" id="mv-player-time"></div>
+      <button class="mv-player-restart hidden" id="mv-player-restart" data-pact="restart" title="This stream started part-way in; go back to the beginning">from the start</button>
+      <button class="mv-player-close" id="mv-player-close" title="Close (Esc)" aria-label="Close player">&#x2715;</button>
+    </div>
+    <div class="mv-player-msg hidden" id="mv-player-msg"></div>
+    <div class="mv-upnext hidden" id="mv-upnext"></div>
+  </div>
+
+  <!-- Music & Podcasts: the player that stays put across every tab (audio-player.js). The bar
+       sits at the bottom of the window; Now Playing covers the page when opened. -->
+  <div id="au-bar" class="au-bar hidden" role="region" aria-label="Audio player"></div>
+  <div id="au-np" class="au-np hidden" aria-hidden="true" role="dialog" aria-label="Now Playing"></div>
+  <div id="au-tap" class="au-tap hidden"></div>
+  <div id="au-announce" class="au-announce hidden" role="status" aria-live="polite"></div>
+  <div id="au-modal" class="lightbox hidden">
+    <div class="zone-editor-panel mv-modal-panel au-modal-panel" id="au-modal-panel"></div>
+  </div>
+  <div id="au-pop" class="au-pop hidden"></div>
+  <div id="au-menu" class="au-menu hidden" role="menu"></div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="vendor/hls.min.js"></script>
+  <script src="wizard.js"></script>
+  <script src="exposure.js"></script>
+  <script src="auth.js"></script>
+  <script src="accounts.js"></script>
+  <script src="app.js"></script>
+  <script src="settings.js"></script>
+  <script src="media-import.js"></script>
+  <script src="movies.js"></script>
+  <script src="audio-player.js"></script>
+  <script src="audio-extras.js"></script>
+  <script src="music.js"></script>
+  <script src="podcasts.js"></script>
+</body>
+</html>

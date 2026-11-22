@@ -1,0 +1,599 @@
+import Foundation
+
+// What a store build (any Release archive: STORE_BUILD in the project's Release settings) leaves
+// out - the torrent downloads behind Movies' and Music's "+ Add", Import a List, search's download
+// offer and Suggested for You. App Review rejects apps that fetch films and albums from torrent
+// sites, so App Store and TestFlight builds never ask the server about downloads and every one of
+// those screens stays hidden. The server's own dashboard keeps them, and so do Debug builds.
+enum StoreBuild {
+    #if STORE_BUILD
+    static let mediaDownloads = false
+    #else
+    static let mediaDownloads = true
+    #endif
+
+    struct DownloadsLeftOut: LocalizedError {
+        var errorDescription: String? { "Downloads aren't part of this build." }
+    }
+}
+
+@MainActor
+final class ReelHouseClient {
+    private unowned let model: AppModel
+    private var session: URLSession
+
+    init(model: AppModel) {
+        self.model = model
+        SessionCookieStore.restore()
+        session = Self.makeSession()
+    }
+
+    // Separate from `session` only for its timeouts: the main session gives up after 15 seconds,
+    // which would cut off starting a transcode, a torrent grab through the VPN or a long library
+    // request. Same shared cookie storage, so it is signed in exactly when the rest of the app is.
+    private lazy var longSession: URLSession = Self.makeLongSession()
+
+    private static func makeLongSession() -> URLSession {
+        let configuration = URLSessionConfiguration.default
+        configuration.httpCookieStorage = .shared
+        configuration.httpShouldSetCookies = true
+        configuration.timeoutIntervalForRequest = 60
+        configuration.timeoutIntervalForResource = 600
+        configuration.waitsForConnectivity = false
+        return URLSession(configuration: configuration)
+    }
+
+
+    // The raw way to the server for AudioAPI - the same session cookie and chosen address as
+    // every other request. Hands back any status rather than throwing, since the caller gives
+    // 401 and 404 their own meanings.
+    func longRequest(
+        method: String, path: String, query: [URLQueryItem], body: Data?, contentType: String?, timeout: TimeInterval?
+    ) async throws -> (status: Int, data: Data) {
+        guard let url = url(path: path, query: query) else { throw ClientError.invalidServerAddress }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.httpBody = body
+        if let contentType { request.setValue(contentType, forHTTPHeaderField: "Content-Type") }
+        if let timeout { request.timeoutInterval = timeout }
+        let (data, response) = try await longSession.data(for: request)
+        return ((response as? HTTPURLResponse)?.statusCode ?? 0, data)
+    }
+
+    func resetSession() {
+        let retired = [session, longSession]
+        session = Self.makeSession()
+        longSession = Self.makeLongSession()
+        // Cancel what's in flight now, but invalidate later. URLSession.data(for:) leaves the
+        // main actor before it creates its task, so a poll that picked up the old session just
+        // before this ran creates its task a moment afterwards - and creating a task in an
+        // invalidated session raises an Objective-C exception, which kills the app instead of
+        // throwing (seen: a background poll during an offline reconnect).
+        for old in retired {
+            old.getAllTasks { tasks in tasks.forEach { $0.cancel() } }
+        }
+        Task {
+            try? await Task.sleep(for: .seconds(30))
+            for old in retired { old.invalidateAndCancel() }
+        }
+        model.log("Created a fresh network session")
+    }
+
+    private static func makeSession() -> URLSession {
+        let configuration = URLSessionConfiguration.default
+        configuration.httpCookieStorage = .shared
+        configuration.httpShouldSetCookies = true
+        configuration.timeoutIntervalForRequest = 10
+        configuration.timeoutIntervalForResource = 15
+        // This client only targets a server on the current LAN. Waiting for a network path
+        // can leave the UI in CONNECTING for the full resource timeout when that host is
+        // powered off or the Mac/device is on a different network. Fail promptly so the
+        // user gets LINK LOST and can retry as soon as the server is available.
+        configuration.waitsForConnectivity = false
+        return URLSession(configuration: configuration)
+    }
+
+    func authStatus() async throws -> AuthStatus {
+        try await get("/api/auth/status")
+    }
+
+    // Unauthenticated on the server side, so this is readable at the login screen too - which is
+    // where knowing the server is too old is arguably most useful.
+    func serverHealth() async throws -> ServerHealth {
+        try await get("/api/health")
+    }
+
+    // MARK: - Movies & TV 
+
+    // Whether the Movies tab should exist at all. Its own endpoint, readable by a Viewer, and it
+    // answers even while the section is switched off; a 404 is an older server and means off too.
+    func mediaEnabled() async throws -> MediaEnabled {
+        try await get("/api/media/enabled")
+    }
+
+    func mediaStatus() async throws -> MediaStatus {
+        try await get("/api/media/status")
+    }
+
+    // MARK: Library management (admin)
+
+    func mediaLibraries() async throws -> [MediaLibrary] {
+        try await get("/api/media/libraries")
+    }
+
+    func saveMediaLibrary(id: String?, _ input: MediaLibraryInput) async throws -> MediaLibrary {
+        if let id {
+            return try await send("/api/media/libraries/\(id)", method: "PUT", body: input)
+        }
+        return try await send("/api/media/libraries", method: "POST", body: input)
+    }
+
+    func deleteMediaLibrary(id: String) async throws {
+        let _: EmptyResponse = try await send("/api/media/libraries/\(id)", method: "DELETE", body: Optional<String>.none)
+    }
+
+    // nil scans every library. A 409 means a scan is already running.
+    func scanMediaLibrary(id: String?) async throws {
+        let path = id.map { "/api/media/libraries/\($0)/scan" } ?? "/api/media/scan"
+        let _: EmptyResponse = try await send(path, method: "POST", body: Optional<String>.none)
+    }
+
+    // "" is the picker's first page; a local path or smb://host/Share/… anything below it.
+    func mediaBrowse(path: String) async throws -> MediaBrowseListing {
+        try await get("/api/media/browse", query: path.isEmpty ? [] : [URLQueryItem(name: "path", value: path)])
+    }
+
+    func mediaMakeFolder(parent: String, name: String) async throws -> MediaBrowseListing {
+        try await send("/api/media/browse/folder", method: "POST", body: MediaNewFolderInput(parent: parent, name: name))
+    }
+
+    func mediaNetworkComputers() async throws -> [MediaNetworkComputer] {
+        try await get("/api/media/network")
+    }
+
+    // Signs in (the server tests it before saving) and answers with the computer's shares.
+    func saveMediaNetworkComputer(id: String?, _ input: MediaNetworkComputerInput) async throws -> MediaNetworkSignIn {
+        if let id {
+            return try await send("/api/media/network/\(id)", method: "PUT", body: input)
+        }
+        return try await send("/api/media/network", method: "POST", body: input)
+    }
+
+    func deleteMediaNetworkComputer(id: String) async throws {
+        let _: EmptyResponse = try await send("/api/media/network/\(id)", method: "DELETE", body: Optional<String>.none)
+    }
+
+    // Takes about three seconds: the server listens for file-sharing computers over mDNS.
+    func discoverMediaComputers() async throws -> [MediaDiscoveredComputer] {
+        try await get("/api/media/network/discover")
+    }
+
+    func mediaHome() async throws -> MediaHome {
+        try await get("/api/media/home")
+    }
+
+    // kind nil returns movies and shows together (never episodes). Sort and order in the server's
+    // vocabulary; it picks a sensible default order for each sort when none is given. inList keeps
+    // only the signed-in account's My List.
+    func mediaItems(
+        kind: String?, query: String? = nil, genre: String? = nil, sort: MediaSort? = nil, order: String? = nil,
+        unwatched: Bool = false, inList: Bool = false, offset: Int = 0, limit: Int = 60
+    ) async throws -> MediaItemsPage {
+        var items: [URLQueryItem] = []
+        if let kind { items.append(.init(name: "kind", value: kind)) }
+        if let query, !query.isEmpty { items.append(.init(name: "q", value: query)) }
+        if let genre, !genre.isEmpty { items.append(.init(name: "genre", value: genre)) }
+        if let sort { items.append(.init(name: "sort", value: sort.rawValue)) }
+        if let order { items.append(.init(name: "order", value: order)) }
+        if unwatched { items.append(.init(name: "unwatched", value: "true")) }
+        if inList { items.append(.init(name: "list", value: "true")) }
+        items.append(.init(name: "offset", value: String(offset)))
+        items.append(.init(name: "limit", value: String(limit)))
+        return try await get("/api/media/items", query: items)
+    }
+
+    func mediaItem(id: String) async throws -> MediaItemDetail {
+        try await get("/api/media/items/\(id)")
+    }
+
+    // "Surprise me": one movie or show at random, unwatched ones first. 404 with the server's own
+    // "nothing matches" message when the library is empty.
+    func mediaRandom() async throws -> MediaItemSummary {
+        try await get("/api/media/random")
+    }
+
+    // start nil resumes from the saved progress, 0 starts over. The codec lists are what every
+    // Apple device decodes in hardware; the server remuxes or transcodes anything else.
+    //
+    // Over the long-timeout session: for anything that isn't direct play the server starts ffmpeg
+    // and only answers once the first segments exist, which can take over a minute for a
+    // transcode - the main session gives up after 15 seconds.
+    func mediaPlayback(id: String, start: Double?) async throws -> MediaPlayback {
+        var items: [URLQueryItem] = [
+            .init(name: "video", value: "h264,hevc"),
+            .init(name: "audio", value: "aac,ac3,eac3,mp3"),
+        ]
+        if let start { items.append(.init(name: "start", value: String(Int(start.rounded(.down))))) }
+        guard let url = url(path: "/api/media/items/\(id)/playback", query: items) else {
+            throw ClientError.invalidServerAddress
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 100
+        model.log("GET \(url.absoluteString)")
+        let (data, response) = try await longSession.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw ClientError.invalidResponse }
+        model.log("GET \(http.statusCode) (media playback)")
+        guard (200..<300).contains(http.statusCode) else {
+            if http.statusCode == 401 { throw ClientError.authenticationRequired }
+            let message = (try? JSONDecoder.reelHouse.decode(APIError.self, from: data))
+                .flatMap { $0.error ?? $0.errors?.joined(separator: "\n") }
+            throw ClientError.server(status: http.statusCode, message: message)
+        }
+        return try JSONDecoder.reelHouse.decode(MediaPlayback.self, from: data)
+    }
+
+    // Fire-and-forget on purpose: the reply is the new progress object, but nothing here needs
+    // it, and an older or oddly-configured server answering with an empty body must not read as
+    // a failure ten seconds into every film.
+    func reportMediaProgress(id: String, position: Double, duration: Double?) async throws {
+        let _: EmptyResponse = try await send(
+            "/api/media/items/\(id)/progress",
+            method: "POST",
+            body: MediaProgressBody(positionSeconds: position, durationSeconds: duration)
+        )
+    }
+
+    func setMediaWatched(id: String, watched: Bool) async throws -> MediaProgress {
+        try await send("/api/media/items/\(id)/watched", method: "POST", body: MediaWatchedBody(watched: watched))
+    }
+
+    // Adds to (or with false removes from) the signed-in account's My List.
+    func setMediaInList(id: String, inList: Bool) async throws -> MediaListResult {
+        try await send("/api/media/items/\(id)/list", method: "POST", body: MediaListBody(inList: inList))
+    }
+
+    func setMediaSeasonWatched(showId: String, season: Int, watched: Bool) async throws {
+        let _: EmptyResponse = try await send(
+            "/api/media/items/\(showId)/seasons/\(season)/watched",
+            method: "POST",
+            body: MediaWatchedBody(watched: watched)
+        )
+    }
+
+    // The wire gives artwork and stream paths relative to the server ("/api/media/items/x/poster").
+    // Always resolved against the address in use *now*, so a poster fetched after the plain-HTTP
+    // fallback kicked in goes to the address that works. An absolute URL passes through untouched.
+    func mediaURL(_ path: String?) -> URL? {
+        guard let path, !path.isEmpty else { return nil }
+        if path.hasPrefix("http://") || path.hasPrefix("https://") { return URL(string: path) }
+        guard let question = path.firstIndex(of: "?") else { return url(path: path) }
+        let query = URLComponents(string: "?" + path[path.index(after: question)...])?.queryItems ?? []
+        return url(path: String(path[..<question]), query: query)
+    }
+
+    func mediaPosterURL(id: String) -> URL? { url(path: "/api/media/items/\(id)/poster") }
+    func mediaBackdropURL(id: String) -> URL? { url(path: "/api/media/items/\(id)/backdrop") }
+    func mediaThumbURL(id: String) -> URL? { url(path: "/api/media/items/\(id)/thumb") }
+    func mediaSeasonPosterURL(showId: String, season: Int) -> URL? {
+        url(path: "/api/media/items/\(showId)/seasons/\(season)/poster")
+    }
+
+    // MARK: - Movie downloads 
+    // No site admin here - the TV leaves managing download sites to the web dashboard.
+
+    // Answers while the feature is off, so the Movies tab can decide whether to show Downloads.
+    // An older server answers 404, which the caller reads as off.
+    func mediaDownloadsStatus() async throws -> MediaDownloadsStatus {
+        guard StoreBuild.mediaDownloads else { throw StoreBuild.DownloadsLeftOut() }
+        return try await get("/api/media/downloads/status")
+    }
+
+    // kind is "movie" or "show".
+    func mediaDownloadLookup(query: String, kind: String) async throws -> MediaDownloadLookup {
+        try await get("/api/media/downloads/lookup", query: [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "kind", value: kind),
+        ])
+    }
+
+    // One request to TMDB per season, so the long-timeout session.
+    func mediaDownloadShow(tmdbId: Int) async throws -> MediaDownloadShow {
+        try await mediaDownloadsRequest("/api/media/downloads/show/\(tmdbId)", method: "GET")
+    }
+
+    // Answers 202 straight away; the search itself runs on the server. Poll mediaDownloadSearch.
+    func startMediaDownloadSearch(_ input: MediaDownloadSearchInput) async throws -> MediaDownloadSearch {
+        try await send("/api/media/downloads/search", method: "POST", body: input)
+    }
+
+    func mediaDownloadSearch(id: String) async throws -> MediaDownloadSearch {
+        try await get("/api/media/downloads/search/\(id)")
+    }
+
+    func mediaDownloads() async throws -> MediaDownloadList {
+        try await get("/api/media/downloads")
+    }
+
+    // The server fetches the torrent through the VPN before it answers, so the long timeout.
+    // Throws MediaAlreadyInLibrary when the movie is already there and `replace` is nil.
+    func startMediaDownload(searchId: String, releaseId: String, libraryId: String? = nil, replace: Bool? = nil) async throws -> MediaDownload {
+        try await mediaDownloadsRequest(
+            "/api/media/downloads", method: "POST",
+            body: MediaDownloadGrabInput(searchId: searchId, releaseId: releaseId, libraryId: libraryId, replace: replace))
+    }
+
+    // Deletes a movie's files from the server's disk. Cannot be undone.
+    func deleteMediaItem(id: String) async throws {
+        let _: EmptyResponse = try await send("/api/media/items/\(id)", method: "DELETE", body: Optional<String>.none)
+    }
+
+    // Cancels an active download (its files are deleted) or removes a finished one from the list.
+    func deleteMediaDownload(id: String) async throws {
+        let _: EmptyResponse = try await send("/api/media/downloads/\(id)", method: "DELETE", body: Optional<String>.none)
+    }
+
+    func retryMediaDownload(id: String) async throws -> MediaDownload {
+        try await send("/api/media/downloads/\(id)/retry", method: "POST", body: Optional<String>.none)
+    }
+
+    // Connects the VPN if it is idle and proves the sites see its address, not the home one. Can
+    // take up to about a minute, so the long-timeout session.
+    func testMediaDownloadsVpn() async throws -> MediaVpnTestResult {
+        try await mediaDownloadsRequest("/api/media/downloads/vpn/test", method: "POST", timeout: 90)
+    }
+
+    // MARK: Imported lists (MOVIE_DOWNLOADS.md "Import a list")
+    // The same routes under /api/music/downloads and /api/media/downloads - `kind` picks which.
+    // Lists are imported from the iPhone, Mac or dashboard; the TV follows them and can pause,
+    // resume and search the missing ones again.
+
+    func mediaImports(kind: MediaImportKind) async throws -> [MediaImportJob] {
+        let list: MediaImportJobList = try await get("\(kind.base)/imports")
+        return list.imports ?? []
+    }
+
+    func pauseMediaImport(kind: MediaImportKind, id: String, paused: Bool) async throws -> MediaImportJob {
+        try await send("\(kind.base)/imports/\(id)/pause", method: "POST", body: MediaImportPauseInput(paused: paused))
+    }
+
+    // Everything not found or failed is searched for again.
+    func retryMediaImport(kind: MediaImportKind, id: String) async throws -> MediaImportJob {
+        try await send("\(kind.base)/imports/\(id)/retry", method: "POST", body: Optional<String>.none)
+    }
+
+    // Over the long-timeout session. A 503 with `starting: true` (the VPN still coming up) is
+    // thrown as MediaDownloadsStartingError so the screen can say so.
+    private func mediaDownloadsRequest<T: Decodable>(
+        _ path: String, method: String, body: (any Encodable)? = nil, timeout: TimeInterval = 60
+    ) async throws -> T {
+        guard let url = url(path: path) else { throw ClientError.invalidServerAddress }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = timeout
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONEncoder().encode(body)
+        }
+        let started = ContinuousClock.now
+        model.log("\(method) \(url.absoluteString)")
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await longSession.data(for: request)
+        } catch {
+            model.log("\(method) failed after \(elapsed(from: started)): \(describe(error))", level: .error)
+            throw error
+        }
+        guard let http = response as? HTTPURLResponse else { throw ClientError.invalidResponse }
+        model.log("\(method) \(http.statusCode) in \(elapsed(from: started))")
+        guard (200..<300).contains(http.statusCode) else {
+            if http.statusCode == 503,
+               let busy = try? JSONDecoder.reelHouse.decode(MediaDownloadsBusy.self, from: data),
+               busy.starting == true {
+                throw MediaDownloadsStartingError(message: busy.error ?? "Connecting to the VPN... try again in a moment.")
+            }
+            if http.statusCode == 409,
+               let duplicate = try? JSONDecoder.reelHouse.decode(MediaAlreadyInLibrary.self, from: data),
+               duplicate.code == "alreadyInLibrary" {
+                throw duplicate
+            }
+            if http.statusCode == 401 { throw ClientError.authenticationRequired }
+            let message = (try? JSONDecoder.reelHouse.decode(APIError.self, from: data))
+                .flatMap { $0.error ?? $0.errors?.joined(separator: "\n") }
+            throw ClientError.server(status: http.statusCode, message: message)
+        }
+        do {
+            return try JSONDecoder.reelHouse.decode(T.self, from: data)
+        } catch {
+            model.log("Could not decode \(url.absoluteString): \(error)", level: .error)
+            throw error
+        }
+    }
+
+    func login(username: String, password: String) async throws {
+        let _: EmptyResponse = try await send(
+            "/api/auth/login",
+            method: "POST",
+            body: LoginBody(username: username, password: password)
+        )
+    }
+
+    func logout() async throws {
+        defer { SessionCookieStore.clear() }
+        let _: EmptyResponse = try await send("/api/auth/logout", method: "POST", body: Optional<String>.none)
+    }
+
+    func url(path: String, query: [URLQueryItem] = []) -> URL? {
+        guard var components = URLComponents(string: model.activeServerURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return nil
+        }
+        components.path = path
+        components.queryItems = query.isEmpty ? nil : query
+        return components.url
+    }
+
+    private func get<T: Decodable>(_ path: String, query: [URLQueryItem] = []) async throws -> T {
+        guard var components = URLComponents(url: try baseURL(), resolvingAgainstBaseURL: false) else {
+            throw ClientError.invalidServerAddress
+        }
+        components.path = path
+        components.queryItems = query.isEmpty ? nil : query
+        guard let url = components.url else { throw ClientError.invalidServerAddress }
+        return try await perform(URLRequest(url: url))
+    }
+
+    private func send<T: Decodable, Body: Encodable>(
+        _ path: String,
+        method: String,
+        body: Body?
+    ) async throws -> T {
+        guard let url = url(path: path) else { throw ClientError.invalidServerAddress }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let body { request.httpBody = try JSONEncoder().encode(body) }
+        return try await perform(request)
+    }
+
+    // Runs the request, logs it, and turns a non-2xx response into a ClientError with the
+    // server's message extracted, without assuming the success body is JSON.
+    private func executeAndValidate(_ request: URLRequest) async throws -> Data {
+        let started = ContinuousClock.now
+        let method = request.httpMethod ?? "GET"
+        let displayURL = request.url?.absoluteString ?? "(invalid URL)"
+        model.log("\(method) \(displayURL)")
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            model.log("\(method) failed after \(elapsed(from: started)): \(describe(error))", level: .error)
+            throw error
+        }
+
+        guard let http = response as? HTTPURLResponse else { throw ClientError.invalidResponse }
+        model.log("\(method) \(http.statusCode) in \(elapsed(from: started))")
+        // Mirror the session cookie into UserDefaults whenever the server issues one - both at
+        // login and on each sliding-expiration renewal, so what's persisted never goes stale.
+        if http.value(forHTTPHeaderField: "Set-Cookie") != nil, let url = request.url {
+            SessionCookieStore.save(for: url)
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let message = (try? JSONDecoder.reelHouse.decode(APIError.self, from: data))
+                .flatMap { $0.error ?? $0.errors?.joined(separator: "\n") }
+            if http.statusCode == 401 { throw ClientError.authenticationRequired }
+            throw ClientError.server(status: http.statusCode, message: message)
+        }
+        return data
+    }
+
+    private func perform<T: Decodable>(_ request: URLRequest) async throws -> T {
+        if T.self == EmptyResponse.self {
+            _ = try await executeAndValidate(request)
+            return EmptyResponse() as! T
+        }
+        let data = try await executeAndValidate(request)
+        do {
+            return try JSONDecoder.reelHouse.decode(T.self, from: data)
+        } catch {
+            let displayURL = request.url?.absoluteString ?? "(invalid URL)"
+            model.log("Could not decode \(displayURL): \(error)", level: .error)
+            throw error
+        }
+    }
+
+    private func baseURL() throws -> URL {
+        guard let url = URL(string: model.activeServerURL.trimmingCharacters(in: .whitespacesAndNewlines)),
+              url.scheme == "http" || url.scheme == "https",
+              url.host != nil else {
+            throw ClientError.invalidServerAddress
+        }
+        return url
+    }
+
+    private func elapsed(from start: ContinuousClock.Instant) -> String {
+        let duration = start.duration(to: .now)
+        return duration.formatted(.units(allowed: [.seconds, .milliseconds], width: .abbreviated))
+    }
+
+    private func describe(_ error: Error) -> String {
+        if let urlError = error as? URLError {
+            return "URLError \(urlError.code.rawValue) (\(urlError.code)): \(urlError.localizedDescription)"
+        }
+        return "\(type(of: error)): \(error.localizedDescription)"
+    }
+}
+
+// Keeps a signed-in session alive across app restarts on an Apple TV.
+//
+// URLSession's cookie jar lives in the app container (Library/Cookies), which tvOS treats as
+// reclaimable - unlike iOS, the only storage tvOS guarantees to keep is UserDefaults (500KB).
+// When the system reclaims it the session cookie vanishes and the app drops back to the login
+// screen even though the server session is still perfectly valid. That never reproduces in the
+// Simulator, which reclaims nothing, so this mirrors the cookie somewhere tvOS won't take away.
+enum SessionCookieStore {
+    private static let defaultsKey = "sessionCookies"
+
+    private struct StoredCookie: Codable {
+        let name: String
+        let value: String
+        let domain: String
+        let path: String
+        let expiresAt: Date?
+    }
+
+    static func restore() {
+        guard let data = UserDefaults.standard.data(forKey: defaultsKey),
+              let stored = try? JSONDecoder().decode([StoredCookie].self, from: data) else { return }
+        for cookie in stored {
+            var properties: [HTTPCookiePropertyKey: Any] = [
+                .name: cookie.name,
+                .value: cookie.value,
+                .domain: cookie.domain,
+                .path: cookie.path
+            ]
+            properties[.expires] = cookie.expiresAt
+            if let restored = HTTPCookie(properties: properties) {
+                HTTPCookieStorage.shared.setCookie(restored)
+            }
+        }
+    }
+
+    static func save(for url: URL) {
+        guard let cookies = HTTPCookieStorage.shared.cookies(for: url), !cookies.isEmpty else { return }
+        let stored = cookies.map {
+            StoredCookie(name: $0.name, value: $0.value, domain: $0.domain, path: $0.path, expiresAt: $0.expiresDate)
+        }
+        guard let data = try? JSONEncoder().encode(stored) else { return }
+        UserDefaults.standard.set(data, forKey: defaultsKey)
+    }
+
+    static func clear() {
+        UserDefaults.standard.removeObject(forKey: defaultsKey)
+    }
+}
+
+struct EmptyResponse: Decodable {}
+
+// The VPN behind movie downloads is still coming up (503 { starting: true }).
+struct MediaDownloadsStartingError: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}
+
+enum ClientError: LocalizedError {
+    case invalidServerAddress
+    case invalidResponse
+    case authenticationRequired
+    case server(status: Int, message: String?)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidServerAddress: "Enter a valid server address, such as http://192.168.1.50:3350."
+        case .invalidResponse: "The server returned an invalid response."
+        case .authenticationRequired: "This server requires you to sign in."
+        case let .server(status, message): message ?? "Server request failed (HTTP \(status))."
+        }
+    }
+}

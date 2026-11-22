@@ -1,0 +1,18 @@
+[Unit]
+Description=ReelHouse downloads: VPN tunnel (network namespace rhvpn)
+PartOf=reelhouse-downloads.target
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=/usr/local/lib/reelhouse-downloads/reelhouse-vpn prepare
+ExecStart=/usr/local/lib/reelhouse-downloads/reelhouse-vpn run
+# Holds the unit in "activating" until the tunnel is the namespace's route out, so nothing that
+# comes After= this starts before the VPN is up.
+ExecStartPost=/usr/local/lib/reelhouse-downloads/reelhouse-vpn wait
+ExecStopPost=/usr/local/lib/reelhouse-downloads/reelhouse-vpn teardown
+TimeoutStartSec=90
+Restart=on-failure
+RestartSec=15
+SyslogIdentifier=reelhouse-vpn

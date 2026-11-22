@@ -1,0 +1,389 @@
+#!/bin/bash
+# The VPN tunnel behind ReelHouse's movie downloads (docs/MOVIE_DOWNLOADS.md).
+#
+# Builds a network namespace, "rhvpn", whose only way to the internet is the VPN, for
+# qBittorrent and Prowlarr to run in:
+#
+#   host  rhvpn0 10.251.0.1/30 ---- veth ---- rhvpn1 10.251.0.2/30  namespace rhvpn
+#                                                rhwg0 / rhtun0 (the VPN) = default route
+#
+# The VPN interface is created in the host namespace and then moved in, so its encrypted
+# packets leave through the host's normal connection while everything *inside* the namespace
+# can only use the tunnel. If the tunnel goes, the namespace simply has no route out: nothing
+# ever falls back to the home connection. The host reaches qBittorrent and Prowlarr over the
+# veth pair; nothing else on the LAN can.
+#
+# Installed to /usr/local/lib/reelhouse-downloads/ by install-downloads.sh and run by the
+# reelhouse-vpn and reelhouse-vpn-watch units. Commands:
+#   prepare | run | wait | teardown      the reelhouse-vpn.service lifecycle (root)
+#   openvpn-up ...                       OpenVPN's --up hook (root)
+#   watch                                the tunnel check, run inside the namespace
+#   set-config FILE [--user U --pass P]  install a provider's .conf or .ovpn (root)
+set -euo pipefail
+
+NS=rhvpn
+HOST_VETH=rhvpn0
+NS_VETH=rhvpn1
+HOST_ADDR=10.251.0.1/30
+NS_ADDR=10.251.0.2/30
+WG_IF=rhwg0
+TUN_IF=rhtun0
+CONF_DIR=/etc/reelhouse/vpn
+NETNS_ETC=/etc/netns/$NS
+STATUS_DIR=/run/reelhouse-vpn
+# "vpn" or "direct", written by ReelHouse (Settings -> MOVIE DOWNLOADS -> Use VPN). Anything
+# but exactly "direct" - a missing, empty or damaged file - means the VPN.
+MODE_FILE=/var/lib/reelhouse-downloads/network-mode
+FORWARD_SAVE=/run/reelhouse-vpn-forward
+NFT_TABLE=reelhouse_downloads
+SELF=$(readlink -f "$0")
+
+mode() {
+    [ "$(tr -d '[:space:]' < "$MODE_FILE" 2>/dev/null)" = direct ] && echo direct || echo vpn
+}
+
+die() { echo "reelhouse-vpn: $*" >&2; exit 1; }
+log() { echo "reelhouse-vpn: $*" >&2; }
+
+# Written by ReelHouse from Settings -> MOVIE DOWNLOADS -> VPN Provider (a Mullvad account or
+# another WireGuard provider's values). Preferred over the installed file when present. It is
+# owned by the app account, not root, so it is only used if every line is one of the handful a
+# WireGuard file needs - nothing in it can name a program, a script or another file.
+APP_WG=/var/lib/reelhouse-downloads/vpn/wireguard.conf
+
+app_wg_ok() {
+    [ -f "$APP_WG" ] && [ ! -L "$APP_WG" ] || return 1
+    [ "$(stat -c %s "$APP_WG")" -lt 4096 ] || return 1
+    ! grep -vE '^[[:space:]]*(#.*)?$' "$APP_WG" | grep -qvE \
+        '^\[(Interface|Peer)\]$|^(PrivateKey|PublicKey|PresharedKey) = [A-Za-z0-9+/]{43}=$|^Address = [0-9a-fA-F.:/,]+$|^DNS = [0-9a-fA-F.:,]+$|^MTU = [0-9]{3,4}$|^AllowedIPs = [0-9a-fA-F.:/,]+$|^Endpoint = ([A-Za-z0-9.-]+|\[[0-9a-fA-F:]+\]):[0-9]{1,5}$|^PersistentKeepalive = [0-9]{1,5}$'
+}
+
+# The WireGuard file in use: ReelHouse's, when it has written a valid one.
+wg_conf() {
+    if app_wg_ok; then echo "$APP_WG"; else echo "$CONF_DIR/vpn.conf"; fi
+}
+
+config_type() {
+    if [ -e "$APP_WG" ] && ! app_wg_ok; then echo refused
+    elif app_wg_ok; then echo wireguard
+    elif [ -f "$CONF_DIR/vpn.conf" ]; then echo wireguard
+    elif [ -f "$CONF_DIR/vpn.ovpn" ]; then echo openvpn
+    else echo none
+    fi
+}
+
+# Written in place, never replaced: the units bind-mount this file over /etc/resolv.conf when
+# they start, and a bind mount follows the file it was given, not its name.
+write_dns() {
+    mkdir -p "$NETNS_ETC"
+    local servers=("$@")
+    [ ${#servers[@]} -gt 0 ] || servers=(1.1.1.1 9.9.9.9)
+    : > "$NETNS_ETC/resolv.conf"
+    for server in "${servers[@]}"; do echo "nameserver $server" >> "$NETNS_ETC/resolv.conf"; done
+    chmod 644 "$NETNS_ETC/resolv.conf"
+}
+
+# Only plain DNS inside the namespace: no mDNS, no systemd-resolved over D-Bus, either of which
+# would answer from the host's side of the tunnel.
+write_nsswitch() {
+    mkdir -p "$NETNS_ETC"
+    if [ -f /etc/nsswitch.conf ]; then
+        sed -E 's/^hosts:.*/hosts:          files dns/' /etc/nsswitch.conf > "$NETNS_ETC/nsswitch.conf"
+    else
+        echo "hosts:          files dns" > "$NETNS_ETC/nsswitch.conf"
+    fi
+    chmod 644 "$NETNS_ETC/nsswitch.conf"
+}
+
+# The values of one [Interface] key in a WireGuard file, one per line.
+wg_values() {
+    sed -n -E "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//Ip" "$(wg_conf)" | tr ',' '\n' | tr -d ' \t\r' | grep -v '^$' || true
+}
+
+# The file minus wg-quick's own keys (Address, DNS, MTU, PostUp...), which `wg setconf` refuses.
+# Done here rather than with `wg-quick strip`: Ubuntu's AppArmor profiles only let wg-quick and wg
+# read /etc/wireguard, so neither can open our file even as root.
+wg_setconf_lines() {
+    grep -iE '^[[:space:]]*(\[(Interface|Peer)\][[:space:]]*$|(PrivateKey|ListenPort|FwMark|PublicKey|PresharedKey|AllowedIPs|Endpoint|PersistentKeepalive)[[:space:]]*=)' "$(wg_conf)" | tr -d '\r'
+}
+
+# The biggest tunnel MTU that fits the path to the VPN server. Many connections carry less than
+# 1500 bytes (T-Mobile Home Internet and other cellular links carry about 1440), and a tunnel
+# sized for 1500 passes its handshake and DNS but silently loses every full-size packet - TLS
+# connections open and then hang. Measured from the host with don't-fragment pings; 80 bytes
+# is WireGuard's worst-case overhead. Providers that drop pings get the IPv6 minimum, 1280.
+probe_mtu() {
+    local endpoint=$1 host ip size
+    host=${endpoint%:*}
+    host=${host#[}
+    host=${host%]}
+    ip=$(getent ahostsv4 "$host" 2>/dev/null | awk 'NR == 1 { print $1 }')
+    if [ -n "$ip" ]; then
+        for size in 1500 1480 1460 1440 1420 1400 1380 1360 1340 1320 1300; do
+            if ping -c1 -M do -s $((size - 28)) -W2 "$ip" >/dev/null 2>&1; then
+                echo $((size - 80))
+                return
+            fi
+        done
+    fi
+    echo 1280
+}
+
+mask_to_bits() {
+    local bits=0 octet
+    IFS=. read -r -a octets <<< "$1"
+    for octet in "${octets[@]}"; do
+        while [ "$octet" -gt 0 ]; do bits=$((bits + (octet & 1))); octet=$((octet >> 1)); done
+    done
+    echo "$bits"
+}
+
+teardown() {
+    ip netns del "$NS" 2>/dev/null || true
+    ip link del "$HOST_VETH" 2>/dev/null || true
+    ip link del "$WG_IF" 2>/dev/null || true
+    nft delete table ip "$NFT_TABLE" 2>/dev/null || true
+    if [ -f "$FORWARD_SAVE" ]; then
+        sysctl -qw "net.ipv4.ip_forward=$(cat "$FORWARD_SAVE")" || true
+        rm -f "$FORWARD_SAVE"
+    fi
+}
+
+# Use VPN is off: the namespace reaches the internet through the host's own connection, NAT'd
+# on the way out. IP forwarding is switched on only for as long as this runs, and put back to
+# what it was by teardown.
+direct_up() {
+    [ -f "$FORWARD_SAVE" ] || cat /proc/sys/net/ipv4/ip_forward > "$FORWARD_SAVE"
+    sysctl -qw net.ipv4.ip_forward=1
+    nft -f - <<EOF
+table ip $NFT_TABLE {
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        ip saddr ${NS_ADDR%/*} oifname != "$HOST_VETH" masquerade
+    }
+}
+EOF
+    ip -n "$NS" route add default via "${HOST_ADDR%/*}"
+    # The host's own upstream DNS (systemd-resolved's stub at 127.0.0.53 is not reachable from
+    # inside the namespace).
+    local dns=()
+    while read -r server; do dns+=("$server"); done < <(sed -n -E 's/^nameserver[[:space:]]+([0-9a-fA-F:.]+).*/\1/p' /run/systemd/resolve/resolv.conf /etc/resolv.conf 2>/dev/null | grep -v -E '^(127\.|::1$)' | awk '!seen[$0]++' || true)
+    write_dns "${dns[@]}"
+    log "VPN turned off in Settings: namespace $NS uses the home connection"
+}
+
+prepare() {
+    [ "$(id -u)" -eq 0 ] || die "prepare must run as root"
+    local type
+    type=$(config_type)
+    if [ "$(mode)" = vpn ]; then
+        [ "$type" != refused ] || die "refused $APP_WG: it holds something other than WireGuard settings. Save the VPN settings again in ReelHouse."
+        [ "$type" != none ] || die "no VPN configuration. Choose a VPN provider in ReelHouse under Settings -> MOVIE DOWNLOADS, or run: sudo $SELF set-config /path/to/provider.conf"
+    else
+        type=direct
+    fi
+    teardown
+
+    ip netns add "$NS"
+    ip -n "$NS" link set lo up
+    ip link add "$HOST_VETH" type veth peer name "$NS_VETH"
+    ip link set "$NS_VETH" netns "$NS"
+    ip addr add "$HOST_ADDR" dev "$HOST_VETH"
+    ip link set "$HOST_VETH" up
+    ip -n "$NS" addr add "$NS_ADDR" dev "$NS_VETH"
+    ip -n "$NS" link set "$NS_VETH" up
+    write_nsswitch
+    write_dns
+
+    if [ "$type" = direct ]; then
+        direct_up
+    elif [ "$type" = wireguard ]; then
+        command -v wg >/dev/null || die "wireguard-tools is not installed"
+        ip link add "$WG_IF" type wireguard
+        # Configured while still in the host namespace, so the endpoint's name is looked up with
+        # the host's DNS - inside, nothing resolves until the tunnel is up.
+        # Under /etc/wireguard because Ubuntu's AppArmor profile for wg reads nothing else.
+        local stripped
+        install -d -m 700 /etc/wireguard
+        stripped=$(umask 077; mktemp /etc/wireguard/reelhouse-rhwg0.XXXXXX)
+        wg_setconf_lines > "$stripped"
+        if ! wg setconf "$WG_IF" "$stripped"; then
+            rm -f "$stripped"
+            die "wg rejected the WireGuard configuration"
+        fi
+        rm -f "$stripped"
+        ip link set "$WG_IF" netns "$NS"
+        local address has_v6=0
+        for address in $(wg_values Address); do
+            if [[ "$address" == *:* ]]; then
+                ip -n "$NS" -6 addr add "$address" dev "$WG_IF" && has_v6=1 || log "could not add $address"
+            else
+                ip -n "$NS" addr add "$address" dev "$WG_IF"
+            fi
+        done
+        local mtu
+        mtu=$(wg_values MTU | head -1)
+        if [ -z "$mtu" ]; then
+            mtu=$(probe_mtu "$(wg_values Endpoint | head -1)")
+            log "measured the path to the VPN server: tunnel MTU $mtu"
+        fi
+        ip -n "$NS" link set "$WG_IF" mtu "$mtu" up
+        ip -n "$NS" route add default dev "$WG_IF"
+        [ "$has_v6" -eq 1 ] && ip -n "$NS" -6 route add default dev "$WG_IF" || true
+        local dns=()
+        while read -r server; do dns+=("$server"); done < <(wg_values DNS | grep -E '^[0-9a-fA-F:.]+$' || true)
+        write_dns "${dns[@]}"
+        log "WireGuard tunnel up in namespace $NS"
+    fi
+}
+
+run() {
+    [ "$(mode)" = direct ] && exec sleep infinity
+    case "$(config_type)" in
+        wireguard)
+            # Nothing to supervise: the kernel runs WireGuard. The unit stays up while this does.
+            exec sleep infinity
+            ;;
+        openvpn)
+            local auth=()
+            [ -f "$CONF_DIR/auth.txt" ] && auth=(--auth-user-pass "$CONF_DIR/auth.txt")
+            # The tunnel device is configured by openvpn-up inside the namespace, never here, and
+            # none of the provider's routes are applied to the host.
+            exec openvpn --config "$CONF_DIR/vpn.ovpn" --cd "$CONF_DIR" \
+                --dev "$TUN_IF" --dev-type tun --disable-dco \
+                --route-noexec --ifconfig-noexec \
+                --pull-filter ignore block-outside-dns \
+                --script-security 2 --up "$SELF openvpn-up" --up-restart \
+                "${auth[@]}" --auth-nocache --verb 3
+            ;;
+        *) die "no VPN configuration" ;;
+    esac
+}
+
+openvpn_up() {
+    local dev=${dev:-$TUN_IF} mtu=${tun_mtu:-1500}
+    if ! ip -n "$NS" link show "$dev" >/dev/null 2>&1; then
+        ip link set "$dev" netns "$NS"
+    fi
+    ip -n "$NS" link set "$dev" mtu "$mtu" up
+    ip -n "$NS" addr flush dev "$dev"
+    if [ -n "${ifconfig_netmask:-}" ]; then
+        ip -n "$NS" addr add "$ifconfig_local/$(mask_to_bits "$ifconfig_netmask")" dev "$dev"
+    else
+        ip -n "$NS" addr add "$ifconfig_local" peer "$ifconfig_remote" dev "$dev"
+    fi
+    ip -n "$NS" route replace default dev "$dev"
+    if [ -n "${ifconfig_ipv6_local:-}" ]; then
+        ip -n "$NS" -6 addr add "$ifconfig_ipv6_local/${ifconfig_ipv6_netbits:-64}" dev "$dev" 2>/dev/null || true
+        ip -n "$NS" -6 route replace default dev "$dev" 2>/dev/null || true
+    fi
+    local dns=() i=1 option
+    while option_var="foreign_option_$i"; option=${!option_var:-}; [ -n "$option" ]; do
+        [[ "$option" =~ ^dhcp-option\ DNS6?\ ([0-9a-fA-F:.]+)$ ]] && dns+=("${BASH_REMATCH[1]}")
+        i=$((i + 1))
+    done
+    write_dns "${dns[@]}"
+    log "OpenVPN tunnel up in namespace $NS"
+}
+
+# Holds the unit in "starting" until the tunnel is up, so qBittorrent and Prowlarr start after it.
+wait_up() {
+    if [ "$(mode)" = direct ]; then
+        ip -n "$NS" route show default 2>/dev/null | grep -q "via ${HOST_ADDR%/*}" && exit 0
+        die "could not route namespace $NS through the home connection"
+    fi
+    local dev
+    [ "$(config_type)" = wireguard ] && dev=$WG_IF || dev=$TUN_IF
+    for _ in $(seq 1 60); do
+        if ip -n "$NS" route show default 2>/dev/null | grep -q "dev $dev"; then break; fi
+        sleep 1
+    done
+    ip -n "$NS" route show default 2>/dev/null | grep -q "dev $dev" \
+        || die "the VPN did not come up within a minute - check the configuration and 'journalctl -u reelhouse-vpn'"
+    [ "$dev" = "$WG_IF" ] || exit 0
+    # A WireGuard interface is "up" the moment it exists; only a handshake proves the server
+    # accepted the key. Any packet into the tunnel starts one.
+    for _ in $(seq 1 20); do
+        ip netns exec "$NS" ping -c1 -W1 1.1.1.1 >/dev/null 2>&1 || true
+        if ip netns exec "$NS" wg show "$WG_IF" latest-handshakes 2>/dev/null | awk '$2 > 0 { found = 1 } END { exit !found }'; then
+            log "WireGuard handshake with the server succeeded"
+            exit 0
+        fi
+        sleep 1
+    done
+    die "the WireGuard server never answered - the key may not be registered with the provider, or the server is down"
+}
+
+# Runs as the app user inside the namespace. Writes what the internet sees this tunnel as, for
+# ReelHouse to show and to compare with the home address; its age says whether it is current.
+watch() {
+    local out error
+    mkdir -p "$STATUS_DIR"
+    printf '{"error":"Checking the VPN...","connecting":true}' > "$STATUS_DIR/status.json.tmp"
+    mv -f "$STATUS_DIR/status.json.tmp" "$STATUS_DIR/status.json"
+    while true; do
+        if out=$(curl -fsS --max-time 15 https://ipinfo.io/json 2>&1) || out=$(curl -fsS --max-time 15 https://am.i.mullvad.net/json 2>&1); then
+            printf '%s' "$out" > "$STATUS_DIR/status.json.tmp"
+        else
+            error=$(printf '%s' "$out" | tr -cd '[:alnum:] .,:()/-' | head -c 200)
+            printf '{"error":"The VPN is not reaching the internet (%s)"}' "$error" > "$STATUS_DIR/status.json.tmp"
+        fi
+        mv -f "$STATUS_DIR/status.json.tmp" "$STATUS_DIR/status.json"
+        sleep 45
+    done
+}
+
+set_config() {
+    [ "$(id -u)" -eq 0 ] || die "set-config must run as root (sudo)"
+    local file=${1:-} user="" pass=""
+    [ -n "$file" ] && [ -f "$file" ] || die "usage: set-config FILE [--user USERNAME --pass PASSWORD]"
+    shift
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --user) user=$2; shift 2 ;;
+            --pass) pass=$2; shift 2 ;;
+            *) die "unknown option $1" ;;
+        esac
+    done
+    mkdir -p "$CONF_DIR"
+    chmod 700 "$CONF_DIR"
+    if grep -qi '^\[Interface\]' "$file"; then
+        grep -qi '^[[:space:]]*PrivateKey' "$file" || die "$file has no PrivateKey - download the full WireGuard configuration from your provider"
+        install -m 600 "$file" "$CONF_DIR/vpn.conf"
+        rm -f "$CONF_DIR/vpn.ovpn" "$CONF_DIR/auth.txt"
+        echo "Installed WireGuard configuration."
+    elif grep -qiE '^[[:space:]]*(remote|client)([[:space:]]|$)' "$file"; then
+        install -m 600 "$file" "$CONF_DIR/vpn.ovpn"
+        rm -f "$CONF_DIR/vpn.conf"
+        # Certificates and keys a provider ships as separate files sit beside the .ovpn.
+        local source_dir
+        source_dir=$(dirname "$(readlink -f "$file")")
+        for extra in $(sed -n -E 's/^[[:space:]]*(ca|cert|key|tls-auth|tls-crypt|crl-verify)[[:space:]]+([^[:space:]<]+).*/\2/p' "$file"); do
+            [ -f "$source_dir/$extra" ] && install -m 600 "$source_dir/$extra" "$CONF_DIR/$(basename "$extra")"
+        done
+        if [ -n "$user" ]; then
+            printf '%s\n%s\n' "$user" "$pass" > "$CONF_DIR/auth.txt"
+            chmod 600 "$CONF_DIR/auth.txt"
+        elif grep -qiE '^[[:space:]]*auth-user-pass[[:space:]]*$' "$file" && [ ! -f "$CONF_DIR/auth.txt" ]; then
+            echo "Note: this provider signs in with a username and password. Run again with --user and --pass (the VPN/service credentials from your provider's site, not your website login)."
+        fi
+        echo "Installed OpenVPN configuration."
+    else
+        die "$file is neither a WireGuard (.conf with [Interface]) nor an OpenVPN (.ovpn) configuration"
+    fi
+    if systemctl is-active --quiet reelhouse-vpn.service; then
+        systemctl restart reelhouse-downloads.target
+        echo "Restarted the tunnel with the new configuration."
+    fi
+}
+
+case "${1:-}" in
+    prepare) prepare ;;
+    run) run ;;
+    wait) wait_up ;;
+    teardown) teardown ;;
+    openvpn-up) openvpn_up ;;
+    watch) watch ;;
+    set-config) shift; set_config "$@" ;;
+    *) echo "usage: $0 prepare|run|wait|teardown|watch|set-config FILE" >&2; exit 2 ;;
+esac

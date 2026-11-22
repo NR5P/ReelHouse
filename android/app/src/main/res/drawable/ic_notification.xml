@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Status-bar glyph for the media and download notifications: a film reel. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M2.00,12.00a10,10 0,1 0,20,0a10,10 0,1 0,-20,0ZM10.00,6.40a2,2 0,1 0,4,0a2,2 0,1 0,-4,0ZM15.33,10.27a2,2 0,1 0,4,0a2,2 0,1 0,-4,0ZM13.29,16.53a2,2 0,1 0,4,0a2,2 0,1 0,-4,0ZM6.71,16.53a2,2 0,1 0,4,0a2,2 0,1 0,-4,0ZM4.67,10.27a2,2 0,1 0,4,0a2,2 0,1 0,-4,0ZM10.60,12.00a1.4,1.4 0,1 0,2.8,0a1.4,1.4 0,1 0,-2.8,0Z" />
+</vector>

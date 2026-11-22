@@ -1,0 +1,25 @@
+[Unit]
+Description=ReelHouse downloads: FlareSolverr (gets Prowlarr past Cloudflare checks, inside the VPN)
+PartOf=reelhouse-downloads.target
+BindsTo=reelhouse-vpn.service
+After=reelhouse-vpn.service
+
+[Service]
+Type=simple
+User=__APP_USER__
+Group=__APP_USER__
+NetworkNamespacePath=/run/netns/rhvpn
+BindReadOnlyPaths=/etc/netns/rhvpn/resolv.conf:/etc/resolv.conf /etc/netns/rhvpn/nsswitch.conf:/etc/nsswitch.conf
+WorkingDirectory=/var/lib/reelhouse-downloads/flaresolverr
+Environment=HOME=/var/lib/reelhouse-downloads/flaresolverr
+# Only on the namespace's own address: Prowlarr (same namespace) and ReelHouse (over the veth
+# pair) reach it; nothing on the VPN side can.
+Environment=HOST=10.251.0.2
+Environment=PORT=8191
+Environment=HEADLESS=true
+Environment=LOG_LEVEL=info
+ExecStart=/opt/reelhouse-flaresolverr/flaresolverr
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+SyslogIdentifier=reelhouse-flaresolverr

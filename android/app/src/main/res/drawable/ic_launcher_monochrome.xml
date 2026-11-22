@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Placeholder ReelHouse glyph: a house with a film reel in it. Used for the themed (monochrome)
+     launcher icon and the splash screen. Replace when there is real art. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M54,25L82,49L82,82L26,82L26,49ZM39.00,62.00a15,15 0,1 0,30,0a15,15 0,1 0,-30,0ZM50.70,53.00a3.3,3.3 0,1 0,6.6,0a3.3,3.3 0,1 0,-6.6,0ZM59.26,59.22a3.3,3.3 0,1 0,6.6,0a3.3,3.3 0,1 0,-6.6,0ZM55.99,69.28a3.3,3.3 0,1 0,6.6,0a3.3,3.3 0,1 0,-6.6,0ZM45.41,69.28a3.3,3.3 0,1 0,6.6,0a3.3,3.3 0,1 0,-6.6,0ZM42.14,59.22a3.3,3.3 0,1 0,6.6,0a3.3,3.3 0,1 0,-6.6,0ZM52.00,62.00a2,2 0,1 0,4,0a2,2 0,1 0,-4,0Z" />
+</vector>

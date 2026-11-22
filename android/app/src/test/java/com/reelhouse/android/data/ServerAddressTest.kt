@@ -1,0 +1,121 @@
+package com.reelhouse.android.data
+
+import java.io.IOException
+import java.time.Instant
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
+import org.junit.Test
+
+class ServerAddressTest {
+    @Test
+    fun `keeps a plain lan address unchanged`() {
+        assertEquals("http://192.168.1.50:3350", ServerAddress.normalize("http://192.168.1.50:3350"))
+    }
+
+    @Test
+    fun `trims surrounding whitespace`() {
+        assertEquals("http://192.168.1.50:3350", ServerAddress.normalize("  http://192.168.1.50:3350  "))
+    }
+
+    // Callers append paths that already start with "/", so a trailing slash here would produce
+    // "http://host:3350//api/media/home".
+    @Test
+    fun `drops trailing slashes`() {
+        assertEquals("http://192.168.1.50:3350", ServerAddress.normalize("http://192.168.1.50:3350/"))
+        assertEquals("http://192.168.1.50:3350", ServerAddress.normalize("http://192.168.1.50:3350///"))
+    }
+
+    @Test
+    fun `accepts https and hostnames`() {
+        assertEquals(
+            "https://reelhouse.example.com",
+            ServerAddress.normalize("https://reelhouse.example.com")
+        )
+    }
+
+    @Test
+    fun `rejects blank input`() {
+        assertNull(ServerAddress.normalize(""))
+        assertNull(ServerAddress.normalize("   "))
+    }
+
+    // A bare host is the most likely thing someone types; it has no scheme, so it can't be used
+    // as a base URL and should be reported rather than silently half-working.
+    @Test
+    fun `rejects an address with no scheme`() {
+        assertNull(ServerAddress.normalize("192.168.1.50:3350"))
+    }
+
+    @Test
+    fun `rejects non http schemes`() {
+        assertNull(ServerAddress.normalize("ftp://192.168.1.50"))
+        assertNull(ServerAddress.normalize("rtsp://192.168.1.50:554/stream1"))
+    }
+
+    @Test
+    fun `rejects a scheme with no host`() {
+        assertNull(ServerAddress.normalize("http://"))
+    }
+
+    // The server's own certificate authority isn't trusted by a stock Android device, so the
+    // https address it advertises has to degrade to the plain-HTTP port it also listens on.
+    @Test
+    fun `derives the plain http port from an https address`() {
+        assertEquals("http://192.168.50.8:3350", ServerAddress.httpFallback("https://192.168.50.8:3453"))
+        assertEquals("http://media.local:3350", ServerAddress.httpFallback("https://media.local"))
+    }
+
+    @Test
+    fun `has no http fallback for an address that is already http`() {
+        assertNull(ServerAddress.httpFallback("http://192.168.50.8:3350"))
+        assertNull(ServerAddress.httpFallback("not an address"))
+    }
+
+    @Test
+    fun `suggests the https form of a portless http address`() {
+        assertEquals("https://cam.example.com", ServerAddress.httpsEquivalent("http://cam.example.com"))
+    }
+
+    // 3453 is a separate listener, not 3350 with TLS bolted on, so there is no honest guess to
+    // make here - and a wrong suggestion in an error message is worse than none.
+    @Test
+    fun `suggests nothing when the http address pins a port`() {
+        assertNull(ServerAddress.httpsEquivalent("http://192.168.50.8:3350"))
+        assertNull(ServerAddress.httpsEquivalent("https://cam.example.com"))
+    }
+}
+
+class ServerTimestampTest {
+    @Test
+    fun `parses a utc instant`() {
+        assertEquals(
+            Instant.parse("2026-07-30T18:55:47Z"),
+            ServerTimestamp.parse("2026-07-30T18:55:47Z")
+        )
+    }
+
+    // The server serializes DateTimeOffset, so several fields arrive with a numeric offset
+    // rather than "Z" - both shapes have to land on the same instant.
+    @Test
+    fun `parses an offset date time`() {
+        assertEquals(
+            Instant.parse("2026-07-30T18:55:47Z"),
+            ServerTimestamp.parse("2026-07-30T13:55:47-05:00")
+        )
+    }
+
+    @Test
+    fun `parses fractional seconds`() {
+        assertEquals(
+            Instant.parse("2026-07-30T18:55:47.638278Z"),
+            ServerTimestamp.parse("2026-07-30T18:55:47.638278Z")
+        )
+    }
+
+    @Test
+    fun `throws a readable error on garbage`() {
+        val error = assertThrows(IOException::class.java) { ServerTimestamp.parse("not-a-date") }
+        assertEquals("Invalid server timestamp: not-a-date", error.message)
+    }
+}

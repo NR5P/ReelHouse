@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="ReelHouse.Server/ReelHouse.Server.csproj" />
+  <Project Path="ReelHouse.Tests/ReelHouse.Tests.csproj" />
+</Solution>

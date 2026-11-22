@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Push notifications (new episodes, finished downloads, sign-in alerts). "development"
+         is what Xcode/devicectl installs are signed with; an App Store or TestFlight export
+         re-signs it as "production". The app reads which one it got from its embedded
+         provisioning profile and tells the server - see PushNotificationCoordinator.apnsSandbox. -->
+    <key>aps-environment</key>
+    <string>development</string>
+    <!-- CarPlay audio (com.apple.developer.carplay-audio) has to be requested from Apple for
+         com.reelhouse.client; add it here (and to the simulator file) once it is granted. See
+         CarPlay/CarPlaySceneDelegate.swift. -->
+</dict>
+</plist>

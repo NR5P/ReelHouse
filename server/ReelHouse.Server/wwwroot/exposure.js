@@ -1,0 +1,32 @@
+// Shows a banner once something has actually reached this server from outside the local
+// network. Evidence-based on purpose: the server binds to all interfaces by design, so there's no
+// configuration that says "LAN-only" - an off-LAN request is the first real signal, and until one
+// arrives this stays silent rather than nagging every LAN user forever.
+window.ReelHouseExposure = (function () {
+  async function check() {
+    const banner = document.getElementById("exposure-banner");
+    try {
+      const response = await fetch("/api/exposure/status");
+      if (!response.ok) return;
+      const payload = await response.json();
+
+      // Through a tunnel or reverse proxy with the login on is the deliberate way to publish
+      // ReelHouse (the visitor reached the proxy over HTTPS), so there is nothing to warn about.
+      if (!payload.externalRequestSeen || (payload.loginEnabled && payload.lastExternalViaProxy)) {
+        banner.classList.add("hidden");
+        return;
+      }
+
+      banner.textContent = payload.loginEnabled
+        ? `reached from ${payload.lastExternalAddress}, outside your network - login is on, but this is plain HTTP. Put it behind HTTPS if that was intended.`
+        : `reached from ${payload.lastExternalAddress}, outside your network${payload.lastExternalViaProxy ? " (through a tunnel or proxy)" : ""}, with no login set - anyone who can reach this address can watch your library and change settings.`;
+      banner.classList.toggle("exposure-banner-severe", !payload.loginEnabled);
+      banner.classList.remove("hidden");
+    } catch {
+      // If the check itself fails, say nothing rather than show a scary message we can't stand
+      // behind.
+    }
+  }
+
+  return { check };
+})();

@@ -1,0 +1,22 @@
+[Unit]
+Description=ReelHouse media server
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=__APP_USER__
+Group=__APP_USER__
+WorkingDirectory=__INSTALL_DIR__/ReelHouse.Server
+ExecStart=__DOTNET_PATH__ __INSTALL_DIR__/ReelHouse.Server/bin/Release/net10.0/ReelHouse.Server.dll
+
+Environment=ASPNETCORE_ENVIRONMENT=Production
+Environment=ASPNETCORE_URLS=http://0.0.0.0:__HTTP_PORT__
+
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+SyslogIdentifier=reelhouse
+
+[Install]
+WantedBy=multi-user.target

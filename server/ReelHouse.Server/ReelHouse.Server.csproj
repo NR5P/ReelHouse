@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <RootNamespace>ReelHouse</RootNamespace>
+    <AssemblyName>ReelHouse.Server</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="ReelHouse.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.10" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.4" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.10" />
+    <!-- Advertises this server over mDNS/DNS-SD so the apps find it on the LAN. -->
+    <PackageReference Include="Makaretu.Dns.Multicast.New" Version="0.38.0" />
+    <!-- Library folders shared from other computers are read over SMB by the server itself. -->
+    <PackageReference Include="SMBLibrary" Version="1.5.8.1" />
+    <!-- Music tags and embedded cover art. -->
+    <PackageReference Include="TagLibSharp" Version="2.3.0" />
+    <!-- Owner emails (failed sign-in, VPN account running out). -->
+    <!-- Album cover resizing. -->
+    <PackageReference Include="SixLabors.ImageSharp" Version="3.1.12" />
+    <PackageReference Include="MailKit" Version="4.17.0" />
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
+  </ItemGroup>
+  <!-- The runtime data folder sits inside the project directory during development; none of it
+       belongs in a build output. -->
+  <ItemGroup>
+    <Content Remove="data/**" />
+    <None Remove="data/**" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,17 @@
+[Unit]
+Description=ReelHouse downloads: Prowlarr (torrent sites, inside the VPN)
+PartOf=reelhouse-downloads.target
+BindsTo=reelhouse-vpn.service
+After=reelhouse-vpn.service
+
+[Service]
+Type=simple
+User=__APP_USER__
+Group=__APP_USER__
+NetworkNamespacePath=/run/netns/rhvpn
+BindReadOnlyPaths=/etc/netns/rhvpn/resolv.conf:/etc/resolv.conf /etc/netns/rhvpn/nsswitch.conf:/etc/nsswitch.conf
+ExecStart=/opt/reelhouse-prowlarr/Prowlarr -nobrowser -data=/var/lib/reelhouse-downloads/prowlarr
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+SyslogIdentifier=reelhouse-prowlarr

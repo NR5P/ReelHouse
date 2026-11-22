@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- As on device (ReelHouse-iOS.entitlements): without it the simulator refuses to hand out
+         an APNs token. Simulator builds are signed ad hoc, so no profile has to grant it. -->
+    <key>aps-environment</key>
+    <string>development</string>
+    <!-- CarPlay audio (com.apple.developer.carplay-audio) has to be requested from Apple for
+         com.reelhouse.client; add it here (and to the device file) once it is granted. See
+         CarPlay/CarPlaySceneDelegate.swift. -->
+</dict>
+</plist>

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ReelHouse</string>
+    <!-- Music & Podcasts: the media notification's channel. -->
+    <string name="audio_channel_name">Now playing</string>
+    <!-- Push notifications (push/PushNotifications). The ids are the server's
+         android.notification.channel_id values and must not change: a renamed channel would be a
+         new one, and the server would be sending to a channel that no longer exists. -->
+    <string name="push_channel_new_episodes_name">New podcast episodes</string>
+    <string name="push_channel_new_episodes_description">A new episode of a show you asked to be told about.</string>
+    <string name="push_channel_downloads_name">Finished downloads</string>
+    <string name="push_channel_downloads_description">A movie or TV download that has finished and is ready to watch.</string>
+    <string name="push_channel_account_name">Sign-in alerts</string>
+    <string name="push_channel_account_description">Someone signed in to your ReelHouse account.</string>
+    <string name="push_channel_general_name">General</string>
+    <string name="push_channel_general_description">Everything else from your ReelHouse server, such as test notifications.</string>
+</resources>
