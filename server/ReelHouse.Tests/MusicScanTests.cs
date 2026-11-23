@@ -59,6 +59,7 @@ public sealed class MusicScanTests : IDisposable
         var files = new MediaFiles(network, relay);
         var art = new MusicArtCache(Path.Combine(_data, "music-art"));
         var scanner = new MusicScanner(store, files, art, new MusicCoverArtClient(new PlainHttp(), NullLogger<MusicCoverArtClient>.Instance),
+            new MusicITunesArtClient(new PlainHttp(), new MusicArtDownloader(new PlainHttp()), NullLogger<MusicITunesArtClient>.Instance),
             new AppSettingsFile(_settingsPath), new ConfigurationBuilder().Build(), NullLogger<MusicScanner>.Instance);
         return new Rig(store, scanner, files, relay, computers, art);
     }

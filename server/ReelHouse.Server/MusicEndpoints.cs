@@ -438,6 +438,8 @@ public static class MusicEndpoints
             return await ServeArtAsync(context, service.Scanner.Files, art, track is null ? null : catalog.AlbumOf(track)?.ArtPath, size, ct);
         });
 
+        MapCovers(music);
+
         music.MapGet("/tracks/{id:guid}/lyrics", async (Guid id, MusicService service, MusicLyricsService lyrics, CancellationToken ct) =>
         {
             var catalog = await service.CatalogAsync(ct);
@@ -453,6 +455,77 @@ public static class MusicEndpoints
                     source = found.Source
                 });
         });
+    }
+
+    // Album covers set by hand, and "find missing covers now" (admin). See MusicCovers.cs.
+    private static void MapCovers(RouteGroupBuilder music)
+    {
+        music.MapGet("/albums/{id:guid}/covers", async (Guid id, MusicService service, MusicCoverService covers, CancellationToken ct) =>
+        {
+            var album = (await service.CatalogAsync(ct)).AlbumsById.GetValueOrDefault(id);
+            if (album is null) return Results.NotFound(new { error = AlbumGone });
+            var list = await covers.CandidatesAsync(album, ct);
+            return Results.Ok(new
+            {
+                current = new { source = album.ArtSource ?? MusicArtSources.None, artUrl = MusicView.AlbumArtUrlOf(album) },
+                candidates = list.Candidates.Select(c => new { id = c.Id, source = c.Source, thumbUrl = c.Thumb.ToString(), label = c.Label }),
+                note = list.Note
+            });
+        }).RequireAuthorization("AdminOnly");
+
+        music.MapPut("/albums/{id:guid}/cover", async (Guid id, MusicCoverChoice input, MusicService service, MusicCoverService covers, CancellationToken ct) =>
+        {
+            var album = (await service.CatalogAsync(ct)).AlbumsById.GetValueOrDefault(id);
+            if (album is null) return Results.NotFound(new { error = AlbumGone });
+            if (string.IsNullOrWhiteSpace(input.CandidateId)) return Results.BadRequest(new { error = "Pick one of the covers on offer." });
+            try
+            {
+                var record = await covers.ChooseAsync(album, input.CandidateId.Trim(), ct);
+                if (record is null) return Results.NotFound(new { error = "That cover isn't on offer for this album. Open the list again and pick another." });
+                return Results.Ok(await CoverResultAsync(service, id, record, ct));
+            }
+            catch (MusicCoverException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (Exception ex) when (MusicCoverService.IsNetwork(ex, ct))
+            {
+                return Results.Json(new { error = "The cover couldn't be downloaded. Try again in a moment." }, statusCode: StatusCodes.Status502BadGateway);
+            }
+        }).RequireAuthorization("AdminOnly");
+
+        // The picture itself is the request body (image/jpeg, image/png or image/webp).
+        music.MapPost("/albums/{id:guid}/cover", async (Guid id, HttpContext context, MusicService service, MusicCoverService covers, CancellationToken ct) =>
+        {
+            var album = (await service.CatalogAsync(ct)).AlbumsById.GetValueOrDefault(id);
+            if (album is null) return Results.NotFound(new { error = AlbumGone });
+            if (context.Request.ContentLength > MusicArtDownloader.MaxBytes)
+                return Results.Json(new { error = MusicArtDownloader.TooBig().Message }, statusCode: StatusCodes.Status413PayloadTooLarge);
+            var data = await MusicArtDownloader.ReadCappedAsync(context.Request.Body, MusicArtDownloader.MaxBytes, ct);
+            if (data is null) return Results.Json(new { error = MusicArtDownloader.TooBig().Message }, statusCode: StatusCodes.Status413PayloadTooLarge);
+            if (data.Length == 0) return Results.BadRequest(new { error = "Choose a picture to upload." });
+            try { return Results.Ok(await CoverResultAsync(service, id, await covers.UploadAsync(album, data, ct), ct)); }
+            catch (MusicCoverException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        }).RequireAuthorization("AdminOnly");
+
+        music.MapDelete("/albums/{id:guid}/cover", async (Guid id, MusicService service, MusicCoverService covers, CancellationToken ct) =>
+        {
+            var album = (await service.CatalogAsync(ct)).AlbumsById.GetValueOrDefault(id);
+            if (album is null) return Results.NotFound(new { error = AlbumGone });
+            var record = await covers.ResetAsync(album, ct);
+            return Results.Ok(await CoverResultAsync(service, id, record, ct));
+        }).RequireAuthorization("AdminOnly");
+
+        music.MapPost("/artwork/refresh-missing", async (MusicService service, MusicCoverService covers, CancellationToken ct) =>
+        {
+            var (queued, started) = await covers.RefreshMissingAsync(ct);
+            var options = await service.OptionsAsync(ct);
+            return Results.Json(new { queued, started, online = options.FetchArtworkOnline }, statusCode: StatusCodes.Status202Accepted);
+        }).RequireAuthorization("AdminOnly");
+    }
+
+    // What a cover change answers: where the album's cover now comes from and its (new) URL.
+    private static async Task<object> CoverResultAsync(MusicService service, Guid albumId, MusicArtRecord? record, CancellationToken ct)
+    {
+        var album = (await service.CatalogAsync(ct)).AlbumsById.GetValueOrDefault(albumId);
+        return new { source = record?.Source ?? MusicArtSources.None, artUrl = MusicView.AlbumArtUrlOf(album) };
     }
 
     private static async Task<IResult> ServeArtAsync(HttpContext context, MediaFiles files, MusicArtCache art, string? path, int? size, CancellationToken ct)

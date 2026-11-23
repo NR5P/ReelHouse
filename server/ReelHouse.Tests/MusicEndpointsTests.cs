@@ -5,6 +5,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using ReelHouse;
 using Xunit;
@@ -158,7 +159,8 @@ public sealed class MusicEndpointsTests : IDisposable
         Assert.True(hits.GetProperty("compilation").GetBoolean());
         Assert.Equal("Various Artists", hits.GetProperty("artist").GetString());
         var rumours = albums.GetProperty("items")[0];
-        Assert.Equal("/api/music/albums/" + rumours.GetProperty("id").GetString() + "/art", rumours.GetProperty("artUrl").GetString());
+        // The art URL carries a version, so a changed cover is a new URL to every client's cache.
+        Assert.Matches("^/api/music/albums/" + rumours.GetProperty("id").GetString() + "/art\\?v=[0-9a-f]{8}$", rumours.GetProperty("artUrl").GetString());
         var detail = await GetJsonAsync(client, $"/api/music/albums/{rumours.GetProperty("id").GetString()}");
         Assert.Equal(["Second Hand News", "Dreams"], detail.GetProperty("tracks").EnumerateArray().Select(t => t.GetProperty("title").GetString()));
         Assert.Contains("flac 16/44.1", detail.GetProperty("formats").EnumerateArray().Select(f => f.GetString()));
@@ -399,4 +401,140 @@ public sealed class MusicEndpointsTests : IDisposable
         await SendJsonAsync(terry, HttpMethod.Get, $"/api/music/playlists/{secretId}", null, HttpStatusCode.NotFound);
     }
 
+    // The Cover Art Archive, MusicBrainz and Apple as far as the cover endpoints see them.
+    private sealed class CoverInternet : HttpMessageHandler
+    {
+        public readonly System.Collections.Concurrent.ConcurrentQueue<(Uri Uri, string Agent)> Requests = new();
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var uri = request.RequestUri!;
+            Requests.Enqueue((uri, request.Headers.UserAgent.ToString()));
+            var url = Uri.UnescapeDataString(uri.AbsoluteUri);
+            static HttpResponseMessage Json(string body) => new(HttpStatusCode.OK) { Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json") };
+            HttpResponseMessage? response = uri.Host switch
+            {
+                "musicbrainz.org" => Json(url.Contains("\"Rumours\"") ? """{ "release-groups": [ { "id": "rg-r", "score": 100, "title": "Rumours" } ] }""" : """{ "release-groups": [] }"""),
+                "coverartarchive.org" when uri.AbsolutePath == "/release-group/rg-r" => Json("""
+                    { "images": [ { "id": 111, "front": true, "types": ["Front"], "image": "http://coverartarchive.org/release/x/111.jpg",
+                      "thumbnails": { "250": "http://coverartarchive.org/release/x/111-250.jpg", "1200": "http://coverartarchive.org/release/x/111-1200.jpg" } } ] }
+                    """),
+                "itunes.apple.com" => Json(url.Contains("Rumours")
+                    ? """{ "resultCount": 1, "results": [ { "collectionId": 41, "collectionName": "Rumours", "artistName": "Fleetwood Mac", "artworkUrl100": "https://is1-ssl.mzstatic.com/image/thumb/r/100x100bb.jpg", "releaseDate": "1977-02-04T08:00:00Z" } ] }"""
+                    : """{ "resultCount": 0, "results": [] }"""),
+                "is1-ssl.mzstatic.com" => Picture(),
+                _ => null
+            };
+            return Task.FromResult(response ?? new HttpResponseMessage(HttpStatusCode.NotFound));
+        }
+
+        private static HttpResponseMessage Picture()
+        {
+            using var image = new SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgb24>(1200, 1200);
+            using var stream = new MemoryStream();
+            SixLabors.ImageSharp.ImageExtensions.SaveAsPng(image, stream);
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(stream.ToArray()) };
+        }
+    }
+
+    private static byte[] PngBytes(int size)
+    {
+        using var image = new SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgb24>(size, size, new SixLabors.ImageSharp.PixelFormats.Rgb24(10, 200, 30));
+        using var stream = new MemoryStream();
+        SixLabors.ImageSharp.ImageExtensions.SaveAsPng(image, stream);
+        return stream.ToArray();
+    }
+
+    private static async Task<JsonElement> UploadCoverAsync(HttpClient client, string albumId, byte[] body, string type, HttpStatusCode expected)
+    {
+        using var content = new ByteArrayContent(body);
+        content.Headers.ContentType = new MediaTypeHeaderValue(type);
+        using var response = await client.PostAsync($"/api/music/albums/{albumId}/cover", content, Ct);
+        var text = await response.Content.ReadAsStringAsync(Ct);
+        Assert.True(response.StatusCode == expected, $"upload -> {(int)response.StatusCode} (wanted {(int)expected}): {text}");
+        return text.Length == 0 ? default : JsonDocument.Parse(text).RootElement.Clone();
+    }
+
+    [Fact]
+    public async Task AlbumCovers_CanBePickedUploadedAndReset_ByAnAdmin_AndTheArtUrlFollows()
+    {
+        if (!await MusicTestAudio.FfmpegAvailableAsync()) Assert.Skip("needs a real ffmpeg on PATH");
+        await MakeLibraryAsync();
+        File.WriteAllText(_settingsPath, """{ "Auth": { "Enabled": false }, "Music": { "FetchArtworkOnline": true, "FetchLyricsOnline": false } }""");
+        var internet = new CoverInternet();
+        using var factory = new WebApplicationFactory<WebProgram>().WithWebHostBuilder(builder => builder
+            .UseTestSettings(_settingsPath, _dataDirectory)
+            .ConfigureTestServices(services =>
+            {
+                services.AddHttpClient(MusicCoverArtClient.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => internet);
+                services.AddHttpClient(MusicITunesArtClient.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => internet);
+                services.AddHttpClient(MusicArtDownloader.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => internet);
+                services.AddSingleton(sp => new MusicITunesArtClient(sp.GetRequiredService<IHttpClientFactory>(), sp.GetRequiredService<MusicArtDownloader>(),
+                    Microsoft.Extensions.Logging.Abstractions.NullLogger<MusicITunesArtClient>.Instance) { Spacing = TimeSpan.FromMilliseconds(10) });
+            }));
+        using var client = factory.CreateClient();
+        await AddLibraryAsync(client, _music, 6);
+        var albums = (await GetJsonAsync(client, "/api/music/albums?sort=year&order=asc")).GetProperty("items");
+        var rumours = albums[0];
+        var id = rumours.GetProperty("id").GetString()!;
+        var embeddedUrl = rumours.GetProperty("artUrl").GetString();
+
+        // What's on offer, from both providers, and what the cover is now.
+        var covers = await GetJsonAsync(client, $"/api/music/albums/{id}/covers");
+        Assert.Equal("embedded", covers.GetProperty("current").GetProperty("source").GetString());
+        Assert.Equal(JsonValueKind.Null, covers.GetProperty("note").ValueKind);
+        var offered = covers.GetProperty("candidates").EnumerateArray()
+            .Select(c => (c.GetProperty("id").GetString(), c.GetProperty("source").GetString(), c.GetProperty("thumbUrl").GetString())).ToList();
+        Assert.Equal([("caa-111", "caa", "https://coverartarchive.org/release/x/111-250.jpg"),
+            ("itunes-41", "itunes", "https://is1-ssl.mzstatic.com/image/thumb/r/300x300bb.jpg")], offered);
+        Assert.All(internet.Requests.Where(r => r.Uri.Host is "itunes.apple.com" or "musicbrainz.org"), r => Assert.Contains("ReelHouse", r.Agent));
+
+        // Picking one.
+        await SendJsonAsync(client, HttpMethod.Put, $"/api/music/albums/{id}/cover", new { candidateId = "caa-999" }, HttpStatusCode.NotFound);
+        await SendJsonAsync(client, HttpMethod.Put, $"/api/music/albums/{id}/cover", new { }, HttpStatusCode.BadRequest);
+        var chosen = await SendJsonAsync(client, HttpMethod.Put, $"/api/music/albums/{id}/cover", new { candidateId = "itunes-41" }, HttpStatusCode.OK);
+        Assert.Equal("chosen", chosen.GetProperty("source").GetString());
+        var chosenUrl = chosen.GetProperty("artUrl").GetString();
+        Assert.NotEqual(embeddedUrl, chosenUrl);
+        Assert.Equal(chosenUrl, (await GetJsonAsync(client, $"/api/music/albums/{id}")).GetProperty("artUrl").GetString());
+        Assert.Contains(internet.Requests, r => r.Uri.AbsoluteUri == "https://is1-ssl.mzstatic.com/image/thumb/r/1200x1200bb.jpg");
+        using (var art = await client.GetAsync(chosenUrl, Ct))
+        {
+            Assert.Equal("image/jpeg", art.Content.Headers.ContentType?.MediaType);
+            using var image = SixLabors.ImageSharp.Image.Load(await art.Content.ReadAsByteArrayAsync(Ct));
+            Assert.Equal(1200, image.Width);
+        }
+
+        // Uploading one: pictures only.
+        var refused = await UploadCoverAsync(client, id, System.Text.Encoding.UTF8.GetBytes("not a picture"), "image/png", HttpStatusCode.BadRequest);
+        Assert.Contains("JPEG, PNG or WebP", refused.GetProperty("error").GetString());
+        var custom = await UploadCoverAsync(client, id, PngBytes(64), "image/png", HttpStatusCode.OK);
+        Assert.Equal("custom", custom.GetProperty("source").GetString());
+        Assert.NotEqual(chosenUrl, custom.GetProperty("artUrl").GetString());
+        Assert.Equal("custom", (await GetJsonAsync(client, $"/api/music/albums/{id}/covers")).GetProperty("current").GetProperty("source").GetString());
+
+        // Back to automatic: the embedded picture again.
+        var reset = await SendJsonAsync(client, HttpMethod.Delete, $"/api/music/albums/{id}/cover", null, HttpStatusCode.OK);
+        Assert.Equal("embedded", reset.GetProperty("source").GetString());
+
+        // Find missing covers now: Lemonade and Hits have none.
+        var queued = await SendJsonAsync(client, HttpMethod.Post, "/api/music/artwork/refresh-missing", null, HttpStatusCode.Accepted);
+        Assert.Equal(2, queued.GetProperty("queued").GetInt32());
+        Assert.True(queued.GetProperty("online").GetBoolean());
+        await WaitForScanAsync(client, 6);
+
+        // None of it is for viewers.
+        using (var scope = factory.Services.CreateScope())
+            await scope.ServiceProvider.GetRequiredService<IAccountStore>().CreateAsync("morgan", PasswordHasher.Hash("correct horse battery"), AccountRole.Viewer, null, Ct);
+        var settings = JsonNode.Parse(await File.ReadAllTextAsync(_settingsPath, Ct))!.AsObject();
+        settings["Auth"] = new JsonObject { ["Enabled"] = true };
+        await File.WriteAllTextAsync(_settingsPath, settings.ToJsonString(), Ct);
+        using var morgan = factory.CreateClient();
+        await SendJsonAsync(morgan, HttpMethod.Post, "/api/auth/login", new { Username = "morgan", Password = "correct horse battery" }, HttpStatusCode.OK);
+        await SendJsonAsync(morgan, HttpMethod.Get, $"/api/music/albums/{id}/covers", null, HttpStatusCode.Forbidden);
+        await SendJsonAsync(morgan, HttpMethod.Put, $"/api/music/albums/{id}/cover", new { candidateId = "caa-111" }, HttpStatusCode.Forbidden);
+        await UploadCoverAsync(morgan, id, PngBytes(64), "image/png", HttpStatusCode.Forbidden);
+        await SendJsonAsync(morgan, HttpMethod.Delete, $"/api/music/albums/{id}/cover", null, HttpStatusCode.Forbidden);
+        await SendJsonAsync(morgan, HttpMethod.Post, "/api/music/artwork/refresh-missing", null, HttpStatusCode.Forbidden);
+    }
 }

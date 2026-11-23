@@ -15,6 +15,11 @@ public sealed class MusicAlbumInfo
     public bool Compilation { get; init; }
     public DateTimeOffset AddedAt { get; init; }
     public string? ArtPath { get; init; }
+    // Changes whenever the cover does (see MusicArtVersion); part of artUrl, so a client's day-long
+    // image cache never shows the old cover.
+    public string? ArtVersion { get; init; }
+    // Where the cover came from (MusicArtSources), null when it was never looked for.
+    public string? ArtSource { get; init; }
     public string[] Words { get; init; } = [];
     public double DurationSeconds => Tracks.Sum(t => t.DurationSeconds);
     public int DiscCount => Math.Max(1, Tracks.Select(t => t.DiscNumber ?? 1).Distinct().Count());
@@ -29,8 +34,21 @@ public sealed class MusicArtistInfo
     public List<MusicTrack> Tracks { get; init; } = [];
     public List<string> Genres { get; init; } = [];
     public string? ImagePath { get; init; }
+    public string? ImageVersion { get; init; }
     public string[] Words { get; init; } = [];
     public bool IsAlbumArtist => Albums.Count > 0;
+}
+
+// A short token that changes when a piece of art does: a new source, file or check time. The
+// art URLs carry it as ?v=, the way podcast art does.
+public static class MusicArtVersion
+{
+    public static string? Of(MusicArtRecord? art) =>
+        art?.Path is null ? null
+            : Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
+                $"{art.Source}|{art.Path}|{art.CheckedAt.UtcTicks}")), 0, 4).ToLowerInvariant();
+
+    public static string Url(string path, string? version) => version is null ? path : $"{path}?v={version}";
 }
 
 // The whole catalog in memory, built once per change of music.db's tracks or art and shared by
@@ -57,7 +75,8 @@ public sealed class MusicCatalog
         {
             var list = group.ToList();
             var first = list[0];
-            var artPath = art.GetValueOrDefault(MusicArtCache.AlbumKey(group.Key))?.Path;
+            var artRecord = art.GetValueOrDefault(MusicArtCache.AlbumKey(group.Key));
+            var artPath = artRecord?.Path;
             albums.Add(new MusicAlbumInfo
             {
                 Id = group.Key,
@@ -70,6 +89,8 @@ public sealed class MusicCatalog
                 Compilation = list.Any(t => t.Compilation),
                 AddedAt = list.Max(t => t.AddedAt),
                 ArtPath = artPath,
+                ArtVersion = MusicArtVersion.Of(artRecord),
+                ArtSource = artRecord?.Source,
                 Words = MusicText.Words($"{first.Album} {first.AlbumArtist}")
             });
         }
@@ -113,6 +134,7 @@ public sealed class MusicCatalog
                 Tracks = tracksOf.Count > 0 ? tracksOf : own.SelectMany(a => a.Tracks).ToList(),
                 Genres = TopGenres(tracksOf.Count > 0 ? tracksOf : own.SelectMany(a => a.Tracks), 3),
                 ImagePath = art.GetValueOrDefault(MusicArtCache.ArtistKey(id))?.Path,
+                ImageVersion = MusicArtVersion.Of(art.GetValueOrDefault(MusicArtCache.ArtistKey(id))),
                 Words = MusicText.Words(name)
             });
         }
@@ -144,6 +166,10 @@ public sealed class MusicCatalog
     // An artist's picture: artist.jpg from their folder, else the cover of their newest album.
     public string? ArtistArt(MusicArtistInfo artist) =>
         artist.ImagePath ?? artist.Albums.Concat(artist.AppearsOn).FirstOrDefault(a => a.ArtPath is not null)?.ArtPath;
+
+    // The version of whichever picture ArtistArt picks.
+    public string? ArtistArtVersion(MusicArtistInfo artist) =>
+        artist.ImagePath is not null ? artist.ImageVersion : artist.Albums.Concat(artist.AppearsOn).FirstOrDefault(a => a.ArtPath is not null)?.ArtVersion;
 
     private static string? MostCommon(IEnumerable<string> values) =>
         values.Where(v => !string.IsNullOrWhiteSpace(v)).GroupBy(v => v, StringComparer.Ordinal)
@@ -353,11 +379,14 @@ public sealed class MusicView(MusicCatalog catalog, MusicUserState user, bool is
     public MusicUserState User { get; } = user;
     public bool IsAdmin { get; } = isAdmin;
 
-    public static string AlbumArtUrl(Guid albumId) => $"/api/music/albums/{albumId}/art";
+    public static string AlbumArtUrl(Guid albumId, string? version = null) => MusicArtVersion.Url($"/api/music/albums/{albumId}/art", version);
 
-    public static string ArtistArtUrl(Guid artistId) => $"/api/music/artists/{artistId}/art";
+    public static string ArtistArtUrl(Guid artistId, string? version = null) => MusicArtVersion.Url($"/api/music/artists/{artistId}/art", version);
 
-    public string? ArtUrlOf(MusicTrack track) => Catalog.AlbumOf(track)?.ArtPath is null ? null : AlbumArtUrl(track.AlbumId);
+    // The album's art URL with its version, or null when it has no cover.
+    public static string? AlbumArtUrlOf(MusicAlbumInfo? album) => album?.ArtPath is null ? null : AlbumArtUrl(album.Id, album.ArtVersion);
+
+    public string? ArtUrlOf(MusicTrack track) => AlbumArtUrlOf(Catalog.AlbumOf(track));
 
     public MusicTrackDto Track(MusicTrack t, Guid? entryId = null) => new()
     {
@@ -414,7 +443,7 @@ public sealed class MusicView(MusicCatalog catalog, MusicUserState user, bool is
         TrackCount = a.Tracks.Count,
         DiscCount = a.DiscCount,
         DurationSeconds = Math.Round(a.DurationSeconds, 1),
-        ArtUrl = a.ArtPath is null ? null : AlbumArtUrl(a.Id),
+        ArtUrl = AlbumArtUrlOf(a),
         AddedAt = a.AddedAt,
         Compilation = a.Compilation,
         Loved = User.IsLoved(MusicLoveKinds.Album, a.Id),
@@ -455,7 +484,7 @@ public sealed class MusicView(MusicCatalog catalog, MusicUserState user, bool is
         AlbumCount = a.Albums.Count,
         TrackCount = a.Tracks.Count,
         Genres = a.Genres,
-        ArtUrl = Catalog.ArtistArt(a) is null ? null : ArtistArtUrl(a.Id),
+        ArtUrl = Catalog.ArtistArt(a) is null ? null : ArtistArtUrl(a.Id, Catalog.ArtistArtVersion(a)),
         Loved = User.IsLoved(MusicLoveKinds.Artist, a.Id),
         PlayCount = ArtistPlays(a)
     };
@@ -508,5 +537,5 @@ public sealed class MusicView(MusicCatalog catalog, MusicUserState user, bool is
     public List<string> ArtUrls(IEnumerable<MusicTrack> tracks) =>
         tracks.Select(t => t.AlbumId).Distinct()
             .Select(id => Catalog.AlbumsById.GetValueOrDefault(id))
-            .Where(a => a?.ArtPath is not null).Take(4).Select(a => AlbumArtUrl(a!.Id)).ToList();
+            .Where(a => a?.ArtPath is not null).Take(4).Select(a => AlbumArtUrlOf(a)!).ToList();
 }

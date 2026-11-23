@@ -940,6 +940,91 @@ window.ReelHouseMusic = (function () {
     A.playTracks(res.data.tracks || [], 0, { type: "playlist", id, name: res.data.name }, { shuffle: !!shuffle });
   }
 
+  // -- album cover (admin): pick one from the Cover Art Archive or Apple, upload one, or go back
+  // to automatic (docs/MUSIC_AND_PODCASTS.md "Album covers").
+
+  const COVER_SOURCES = {
+    embedded: "the picture inside the music files", folder: "a picture in the album's folder", caa: "the Cover Art Archive",
+    itunes: "Apple's iTunes search", custom: "a picture uploaded here", chosen: "a cover picked here", none: "nothing yet"
+  };
+  const COVER_PROVIDERS = { caa: "Cover Art Archive", itunes: "Apple" };
+  let coverAlbum = null;
+
+  // Plain text (set with textContent).
+  function coverCurrentLine(source) {
+    const pinned = source === "custom" || source === "chosen";
+    return `Now: ${COVER_SOURCES[source] || source || "nothing yet"}${pinned ? " - kept until you reset it, whatever a scan finds." : "."}`;
+  }
+
+  async function openCoverPicker(a) {
+    coverAlbum = { id: a.id, title: a.title, busy: false };
+    U.openModal(`${U.modalHeader("Change cover", `“${h(a.title)}”${a.artist ? ` · ${h(a.artist)}` : ""}`)}
+      <div class="au-cover-now" id="mu-cover-now"></div>
+      <div class="au-cover-grid" id="mu-cover-grid">${loadingMarkup()}</div>
+      <div class="mv-field-note hidden" id="mu-cover-note"></div>
+      <input type="file" id="mu-cover-file" accept="image/jpeg,image/png,image/webp" hidden>
+      <div class="mv-modal-foot">
+        <button type="button" class="mv-btn mv-btn-quiet mv-foot-start" data-mact="mu-cover-reset">Reset to automatic</button>
+        <button type="button" class="mv-btn mv-btn-glass" data-mact="mu-cover-upload">${ICON.plus}<span>Upload image…</span></button>
+      </div>`, () => { coverAlbum = null; }, true);
+    const res = await request(`/api/music/albums/${enc(a.id)}/covers`);
+    if (!coverAlbum || coverAlbum.id !== a.id) return;
+    const grid = el("mu-cover-grid");
+    if (!grid) return;
+    if (!res.ok) { grid.innerHTML = `<div class="mv-empty mv-error">${h(res.error)}</div>`; return; }
+    const d = res.data || {};
+    el("mu-cover-now").textContent = coverCurrentLine(d.current && d.current.source);
+    const note = el("mu-cover-note");
+    if (d.note) { note.textContent = d.note; note.classList.remove("hidden"); }
+    const list = (d.candidates || []).filter((c) => U.safeSrc(c.thumbUrl));
+    grid.innerHTML = list.length ? list.map((c) => `<button type="button" class="au-cover-pick" data-mact="mu-cover-pick" data-id="${h(c.id)}" title="${h(c.label || "")}">
+        <span class="au-cover-thumb"><img src="${h(c.thumbUrl)}" alt="" loading="lazy"></span>
+        <span class="au-cover-src">${h(COVER_PROVIDERS[c.source] || c.source)}</span>
+        <span class="au-cover-label">${h(c.label || "")}</span>
+      </button>`).join("") : `<div class="mv-empty">No covers to pick from - upload a picture instead.</div>`;
+  }
+
+  function setCoverBusy(busy) {
+    if (coverAlbum) coverAlbum.busy = busy;
+    for (const b of document.querySelectorAll("#au-modal-panel [data-mact^='mu-cover']")) b.disabled = busy;
+  }
+
+  // After a change: the album page (and its cards) are drawn again with the new artUrl, whose
+  // version is new, so no cached copy of the old cover shows.
+  function coverChanged(res, message) {
+    setCoverBusy(false);
+    if (!res.ok) { showToast(res.error, false); return; }
+    U.closeModal();
+    showToast(message, true);
+    if (current && current.kind === "album" && current.data && res.data) current.data.artUrl = res.data.artUrl;
+    if (route.name === "album") refreshCurrent();
+  }
+
+  async function chooseCover(candidateId) {
+    if (!coverAlbum || coverAlbum.busy) return;
+    const id = coverAlbum.id;
+    setCoverBusy(true);
+    const res = await request(`/api/music/albums/${enc(id)}/cover`, { method: "PUT", body: { candidateId } });
+    coverChanged(res, "Cover changed");
+  }
+
+  async function uploadCover(file) {
+    if (!coverAlbum || coverAlbum.busy || !file) return;
+    if (file.size > 15 * 1024 * 1024) { showToast("That picture is bigger than 15 MB.", false); return; }
+    const id = coverAlbum.id;
+    setCoverBusy(true);
+    const res = await request(`/api/music/albums/${enc(id)}/cover`, { method: "POST", raw: file, contentType: file.type || "application/octet-stream" });
+    coverChanged(res, "Cover uploaded");
+  }
+
+  async function resetCover() {
+    if (!coverAlbum || coverAlbum.busy) return;
+    const id = coverAlbum.id;
+    setCoverBusy(true);
+    const res = await request(`/api/music/albums/${enc(id)}/cover`, { method: "DELETE" });
+    coverChanged(res, res.ok && res.data && res.data.source !== "none" ? `Back to automatic: ${COVER_SOURCES[res.data.source] || res.data.source}` : "Back to automatic - no cover found yet");
+  }
+
   // -- add to playlist
 
   async function openAddToPlaylist(tracks) {
@@ -1696,6 +1781,9 @@ window.ReelHouseMusic = (function () {
       case "mu-add-again": if (add.pick) startSearch(add.pick); return true;
       case "mu-add-others": add.others = !add.others; drawAdd(); return true;
       case "mu-add-grab": grab(target, target.dataset.release); return true;
+      case "mu-cover-pick": chooseCover(target.dataset.id); return true;
+      case "mu-cover-upload": { const input = el("mu-cover-file"); if (input && !(coverAlbum && coverAlbum.busy)) input.click(); return true; }
+      case "mu-cover-reset": resetCover(); return true;
       default: return false;
     }
   });
@@ -1703,6 +1791,7 @@ window.ReelHouseMusic = (function () {
   function wireModalInputs() {
     el("au-modal").addEventListener("change", (e) => {
       if (e.target.dataset && e.target.dataset.rule != null && editor) onRuleChange(e.target);
+      if (e.target.id === "mu-cover-file" && e.target.files && e.target.files[0]) { uploadCover(e.target.files[0]); e.target.value = ""; }
     });
   }
 
@@ -1760,7 +1849,9 @@ window.ReelHouseMusic = (function () {
             { label: "Play next", icon: ICON.queue, run: () => A.enqueue(a.tracks || [], "next", "track") },
             { label: "Add to queue", icon: ICON.plus, run: () => A.enqueue(a.tracks || [], "last", "track") },
             { label: "Add to playlist…", icon: ICON.plus, run: () => openAddToPlaylist(a.tracks || []) },
-            a.artistId ? { label: "Go to artist", icon: ICON.note, run: () => go({ name: "artist", id: a.artistId }) } : null
+            a.artistId ? { label: "Go to artist", icon: ICON.note, run: () => go({ name: "artist", id: a.artistId }) } : null,
+            U.isAdmin() ? "-" : null,
+            U.isAdmin() ? { label: "Change cover…", icon: ICON.edit, run: () => openCoverPicker(a) } : null
           ], { title: a.title });
           break;
         }

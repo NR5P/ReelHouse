@@ -59,7 +59,11 @@ them, and each is saved with `PUT /api/settings/music` or `PUT /api/settings/pod
 - **`music`** (title **MUSIC**):
   - `enabled`
   - `rescanHours` (0–168, default 12)
-  - `fetchArtworkOnline` (MusicBrainz + Cover Art Archive for albums with no art; default true)
+  - `fetchArtworkOnline` (MusicBrainz + Cover Art Archive, then Apple's iTunes search, for albums
+    with no art; default true). When it is on, the album artist and album title are sent to
+    MusicBrainz and to Apple's iTunes search (and covers are downloaded from the Cover Art
+    Archive / archive.org and Apple's artwork servers). Nothing else about the library leaves
+    the server.
   - `fetchLyricsOnline` (LRCLIB for tracks with no lyrics; default true)
   - `transcodeBitrate` (96–320 kbps, default 256: used when a file is converted for a device, or
     when a device asks for data-saver quality)
@@ -128,6 +132,13 @@ saved list, so a computer signed in to for Movies already works here.
   playlists and loves for them are kept in case the folder comes back.
 - `POST /api/music/libraries/{id}/scan` → 202. `POST /api/music/scan` → 202 for every library.
   Either returns 409 if a scan is already running.
+- `POST /api/music/artwork/refresh-missing` → 202 `{ "queued": 12, "started": true, "online": true }`:
+  "find missing covers now". Every album with no cover (`none`, or never looked for) is made due
+  at once instead of 30 days after its last look, and the artwork pass starts in the background
+  (`/status` shows `scanning` with phase `artwork`). Albums that have a cover, and covers set by
+  hand, are left alone. `queued` is how many albums have no cover (0 starts nothing); `started` is
+  false when a scan was already running, in which case a whole scan follows it; `online` is
+  `fetchArtworkOnline` (when false only the files and folders are looked at again).
 
 ### Scanning rules
 
@@ -139,9 +150,23 @@ saved list, so a computer signed in to for Movies already works here.
   artists and no album artist becomes **Various Artists** (`compilation: true`).
 - Artists split on `;`, ` feat. `, ` ft. ` and ` & ` (but never inside a known band name such as
   "Simon & Garfunkel", which stays whole when it is the album artist).
-- Album art, in order of preference: the embedded picture of the first track; `cover.jpg`,
-  `folder.jpg`, `front.jpg` or `album.jpg` (png too) in the album folder; then Cover Art Archive
-  if `fetchArtworkOnline`.
+- Album art, in order of preference (the `source` the server records for it in brackets):
+  1. a cover an admin set by hand: uploaded (`custom`) or picked from the candidates (`chosen`),
+     see "Album covers" below. It wins over everything else, and no scan replaces or rechecks it;
+  2. the embedded picture of the first tracks (`embedded`);
+  3. `cover.jpg`, `folder.jpg`, `front.jpg` or `album.jpg` (png too) in the album folder, or the
+     album folder above a `CD1`/`Disc 2` folder (`folder`);
+  4. if `fetchArtworkOnline`: the Cover Art Archive (`caa`), by the MusicBrainz release or
+     release-group id in the tags, else a MusicBrainz search for the album (at most one request a
+     second);
+  5. if `fetchArtworkOnline`, and only when the Cover Art Archive has nothing or MusicBrainz knows
+     no such album: Apple's iTunes search (`itunes`, the 600×600 artwork). A result is used only
+     when its title and artist match the album's (edition tails such as "(Remastered)" or
+     "- Deluxe Edition" aside; "Rumours Live" is not "Rumours"). Searches are kept at least 3 s
+     apart.
+  6. nothing (`none`). An album with no cover is looked for again after 30 days, or at once with
+     "find missing covers now". A network error or timeout from either online source records
+     nothing, so the next scan tries again; it is never taken as `none`.
 - Artist images: `artist.jpg` in the artist folder. Without one, `artUrl` is the art of the
   artist's newest album.
 - Lyrics, in order of preference: a sidecar `<file>.lrc` (synced); embedded lyrics (USLT or the
@@ -163,7 +188,7 @@ Track = {
   "channels": 2, "sizeBytes": 29000000, "composer": null, "bpm": null,
   "replayGain": { "trackGain": -6.2, "trackPeak": 0.98, "albumGain": -7.1, "albumPeak": 1.0 },
   "hasLyrics": true,
-  "artUrl": "/api/music/albums/{albumId}/art",
+  "artUrl": "/api/music/albums/{albumId}/art?v=1a2b3c4d",
   "streamUrl": "/api/music/tracks/{id}/stream",
   "addedAt": "…",
   "loved": false, "rating": 0, "playCount": 12, "lastPlayedAt": "…",
@@ -176,11 +201,15 @@ Track = {
 - `replayGain` is null when the file has none, and each field inside it can be null.
 - `hasLyrics` is true when lyrics are known to exist (sidecar or embedded). False can still find
   lyrics online.
+- `artUrl` (here, on Album, Artist, and in `artUrls`) is null when there is no art. It carries a
+  `?v=` version that changes whenever the cover does (a new picture, source or lookup), so a
+  client can cache the image for the day the server allows and still show a changed cover at
+  once. Treat the URL as opaque and add `size` with `&` when it already has a query.
 
 ```json
 Album = { "id", "title": "Rumours", "artist": "Fleetwood Mac", "artistId": "…", "year": 1977,
           "genres": ["Rock"], "trackCount": 11, "discCount": 1, "durationSeconds": 2399,
-          "artUrl": "/api/music/albums/{id}/art", "addedAt": "…", "compilation": false,
+          "artUrl": "/api/music/albums/{id}/art?v=1a2b3c4d", "addedAt": "…", "compilation": false,
           "loved": false, "rating": 0, "playCount": 40, "lastPlayedAt": "…" }
 ```
 
@@ -188,7 +217,7 @@ Album = { "id", "title": "Rumours", "artist": "Fleetwood Mac", "artistId": "…"
 
 ```json
 Artist = { "id", "name": "Fleetwood Mac", "albumCount": 3, "trackCount": 38, "genres": ["Rock"],
-           "artUrl": "/api/music/artists/{id}/art", "loved": false, "playCount": 120 }
+           "artUrl": "/api/music/artists/{id}/art?v=1a2b3c4d", "loved": false, "playCount": 120 }
 ```
 
 ```json
@@ -307,6 +336,46 @@ All list routes take `offset` (default 0) and `limit` (default 100, max 1000), a
   `{ "synced": true, "lines": [ { "time": 12.3, "text": "Now here you go again" } ], "plain": "…", "source": "sidecar|embedded|lrclib" }`.
   When unsynced, `lines` have `time: null`. Returns 404 `{ error }` when none are found. A 404
   from the online lookup is cached for 30 days.
+
+### Album covers (admin)
+
+An admin can replace an album's cover. A cover set here (`custom` or `chosen`) wins over the
+embedded picture and folder art, and no scan replaces or rechecks it until it is reset. Each call
+answers 404 `{ error }` for an album that is not in the library. The web dashboard offers this as
+"Change cover…" in an album page's menu.
+
+- `GET /api/music/albums/{id}/covers` → the covers on offer:
+  ```json
+  { "current": { "source": "embedded|folder|caa|itunes|custom|chosen|none", "artUrl": "/api/music/albums/{id}/art?v=…" },
+    "candidates": [ { "id": "caa-1234567890", "source": "caa", "thumbUrl": "https://coverartarchive.org/…-250.jpg", "label": "Front" },
+                    { "id": "itunes-1440857781", "source": "itunes", "thumbUrl": "https://is1-ssl.mzstatic.com/…/300x300bb.jpg", "label": "Rumours · Fleetwood Mac · 1977" } ],
+    "note": null }
+  ```
+  `caa` candidates are every picture the Cover Art Archive has for the album's release (when the
+  tags carry a release id) and release group (from the tags, or a MusicBrainz search), fronts
+  first. `itunes` candidates are Apple's iTunes search results for the album by that title or
+  artist, the close matches first. If one provider can't be reached the other's covers are still
+  listed and `note` says so; `note` also explains an empty list, and when `fetchArtworkOnline` is
+  off nothing is looked up and `candidates` is empty. `thumbUrl`s point at the providers' own
+  servers.
+- `PUT /api/music/albums/{id}/cover` with `{ "candidateId": "caa-1234567890" }` → 200
+  `{ "source": "chosen", "artUrl": "…?v=…" }`. The server downloads the picked cover itself (the
+  Cover Art Archive's 1200 px copy, or Apple's 1200×1200). It only downloads a candidate it
+  offered for that album in the last half hour (or offers again now), and only from
+  coverartarchive.org, archive.org and Apple's mzstatic.com artwork servers, redirects included;
+  a URL is never accepted from the client. 404 `{ error }` for a candidate it doesn't offer, 400
+  for a missing `candidateId` or a download that isn't a picture, 502 when the download fails.
+- `POST /api/music/albums/{id}/cover` with the picture itself as the body (JPEG, PNG or WebP, up
+  to 15 MB, any `Content-Type`) → 200 `{ "source": "custom", "artUrl": "…?v=…" }`. It is turned
+  the right way up, shrunk to at most 1500 px and kept as a JPEG. 400 `{ error }` for anything
+  that isn't one of those pictures, 413 when it is too big.
+- `DELETE /api/music/albums/{id}/cover` → 200 `{ "source": "embedded", "artUrl": "…" }`: back to
+  automatic. The hand-set cover is removed and the album is looked up again at once, by the
+  preference list in §2 (online too, if allowed). `source` is `none` and `artUrl` null when
+  nothing was found; if an online lookup failed, the next scan tries again.
+
+Changing a cover gives the album a new `artUrl` version, so every client shows the new picture
+the next time it loads the album. Sized copies (`?size=`) are made afresh for the new picture.
 
 ### Streaming
 
