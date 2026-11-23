@@ -6,6 +6,8 @@ struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     @State private var address = ""
     @State private var showingDiagnostics = false
+    // Set when a new address didn't answer and the old one was put back.
+    @State private var addressNotice: String?
 
     var body: some View {
         #if DEBUG
@@ -43,14 +45,24 @@ struct SettingsView: View {
                     ConnectionBadge()
                 }
                 Button("Save and Reconnect") {
-                    Task {
-                        // The way past a server whose certificate authority changed - see ServerIdentity.
-                        ServerIdentity.forget(normalized(address))
-                        model.serverURL = normalized(address)
-                        await model.connect(resetNetworkSession: true)
-                    }
+                    Task { await switchServer(to: normalized(address)) }
                 }
                 .disabled(address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                if let addressNotice {
+                    Text(addressNotice)
+                        .font(.caption)
+                        .foregroundStyle(ReelHouseTheme.red)
+                }
+                // The servers discovery found, one click each - the way back from a mistyped
+                // address without typing on the TV again.
+                ForEach(model.discoveredServers.filter { $0.addressString != model.serverURL }) { server in
+                    Button {
+                        address = server.addressString
+                        Task { await switchServer(to: server.addressString) }
+                    } label: {
+                        LabeledContent("Use \(server.name)", value: server.addressString)
+                    }
+                }
             }
 
             Section("Account") {
@@ -128,21 +140,28 @@ struct SettingsView: View {
             // Credits, as on the iPhone's Acknowledgements screen (AcknowledgementsView.swift). A TV
             // can't open links, so the sites are named instead. TMDB's terms ask for its notice
             // wherever its data is shown.
+            // Focusable so the remote can reach it: a tvOS list only scrolls as far as the last
+            // row that can take focus, and plain text can't.
             Section("About") {
                 LabeledContent("App Version", value: Self.appVersion)
+                    .focusable()
                 Text("Movie and TV descriptions and artwork: The Movie Database (themoviedb.org). This product uses the TMDB API but is not endorsed or certified by TMDB.")
                     .font(.caption)
-                Text("Music details and cover art: MusicBrainz and Cover Art Archive; suggestions: ListenBrainz; lyrics: LRCLIB.")
+                    .focusable()
+                Text("Music details and cover art: MusicBrainz, Cover Art Archive and Apple's iTunes Search; suggestions: ListenBrainz; lyrics: LRCLIB.")
                     .font(.caption)
+                    .focusable()
                 Text("ReelHouse is an independent project, not affiliated with any media company or service named in the app.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .focusable()
             }
 
             Section {
                 Text("This Apple TV client manages its own connection. Accounts are managed from the ReelHouse web dashboard.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .focusable()
             }
         }
         .onAppear {
@@ -152,6 +171,24 @@ struct SettingsView: View {
     }
 
     private func normalized(_ value: String) -> String { ServerSetupView.normalizedAddress(value) }
+
+    // Tries `newAddress`; if nothing answers there and the old address was different, the old
+    // one comes back rather than leaving the TV with a typo and nothing but this Settings tab.
+    // A server that answers at all - even asking for a sign-in - counts as found.
+    private func switchServer(to newAddress: String) async {
+        let previous = model.serverURL
+        addressNotice = nil
+        // The way past a server whose certificate authority changed - see ServerIdentity.
+        ServerIdentity.forget(newAddress)
+        model.serverURL = newAddress
+        await model.connect(resetNetworkSession: true)
+        guard model.connectionState == .offline, !previous.isEmpty, previous != newAddress else { return }
+        let reason = model.lastError ?? "No ReelHouse server answered."
+        model.serverURL = previous
+        address = previous
+        await model.connect(resetNetworkSession: true)
+        addressNotice = "Couldn't reach \(newAddress) (\(reason)) Still using \(previous)."
+    }
 
     private static var appVersion: String {
         let info = Bundle.main.infoDictionary
