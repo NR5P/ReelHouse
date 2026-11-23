@@ -198,8 +198,25 @@ public sealed class SqliteMusicStore : IMusicStore, IDisposable
                 Body TEXT,
                 FetchedAt TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS MusicState (
+                Key TEXT PRIMARY KEY,
+                Value TEXT NOT NULL
+            );
             """;
         command.ExecuteNonQuery();
+
+        // Apple's iTunes search arrived as a second cover source after many albums had already
+        // been marked "no cover" (re-asked only after a month). Once, make those due now, so the
+        // next scan tries them against it.
+        using var recheck = _connection.CreateCommand();
+        recheck.CommandText = """
+            UPDATE MusicArt SET CheckedAt = '2000-01-01T00:00:00.0000000+00:00'
+            WHERE Source = 'none' AND Key LIKE 'album:%'
+              AND NOT EXISTS (SELECT 1 FROM MusicState WHERE Key = 'art.itunesRecheck');
+            INSERT OR IGNORE INTO MusicState (Key, Value) VALUES ('art.itunesRecheck', '1');
+            """;
+        recheck.ExecuteNonQuery();
     }
 
     public long CatalogVersion => Interlocked.Read(ref _catalogVersion);

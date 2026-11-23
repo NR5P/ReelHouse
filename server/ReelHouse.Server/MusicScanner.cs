@@ -456,13 +456,17 @@ public sealed class MusicScanner : IDisposable
 
     // The online providers, in order: the Cover Art Archive (by the release id in the tags, the
     // release group id in the tags, or a MusicBrainz search), then Apple's iTunes search when the
-    // archive has nothing or MusicBrainz knows no such album. Network trouble with either is
-    // "try again later" (null, nothing recorded), never "none".
+    // archive has nothing, MusicBrainz knows no such album, or the archive can't be reached right
+    // now (MusicBrainz answers 503 often enough that waiting for it left most albums bare). Null
+    // ("try again next scan", nothing recorded) when nothing was found and a provider couldn't be
+    // reached; when only the archive was unreachable and iTunes had no match, "none" is recorded
+    // but comes up again in a day rather than in RecheckMissingArtAfter.
     private async Task<MusicArtRecord?> FindOnlineArtAsync(Guid albumId, List<MusicTrack> ordered, CancellationToken cancellationToken)
     {
         var key = MusicArtCache.AlbumKey(albumId);
         var first = ordered[0];
         var destination = _art.AlbumPath(albumId, ".jpg");
+        var archiveUnreachable = false;
         try
         {
             var fetched = false;
@@ -478,14 +482,19 @@ public sealed class MusicScanner : IDisposable
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException && !cancellationToken.IsCancellationRequested)
         {
             _logger.LogInformation("Cover Art Archive lookup for {Album} failed: {Message}", first.Album, ex.Message);
-            return null;
+            archiveUnreachable = true;
         }
 
-        if (first.Album == MusicText.UnknownAlbum) return new MusicArtRecord(key, null, MusicArtSources.None, DateTimeOffset.UtcNow);
+        if (first.Album == MusicText.UnknownAlbum)
+            return archiveUnreachable ? null : new MusicArtRecord(key, null, MusicArtSources.None, DateTimeOffset.UtcNow);
         try
         {
             var fetched = await _itunes.FindCoverAsync(first.AlbumArtist, first.Album, destination, cancellationToken);
-            return new MusicArtRecord(key, fetched ? destination : null, fetched ? MusicArtSources.ITunes : MusicArtSources.None, DateTimeOffset.UtcNow);
+            if (fetched) return new MusicArtRecord(key, destination, MusicArtSources.ITunes, DateTimeOffset.UtcNow);
+            // Checked "a day ago minus the recheck interval": due again tomorrow, when the archive
+            // may answer.
+            var checkedAt = archiveUnreachable ? DateTimeOffset.UtcNow - RecheckMissingArtAfter + TimeSpan.FromDays(1) : DateTimeOffset.UtcNow;
+            return new MusicArtRecord(key, null, MusicArtSources.None, checkedAt);
         }
         catch (MusicCoverException ex)
         {

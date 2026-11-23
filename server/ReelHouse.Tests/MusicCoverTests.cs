@@ -151,6 +151,11 @@ public sealed class MusicCoverTests : IDisposable
         Assert.False(MusicITunesArtClient.TitleMatches("Greatest Hits", "Greatest Hits, Vol. 2"));
         Assert.False(MusicITunesArtClient.TitleMatches("Tusk", "Rumours"));
         Assert.False(MusicITunesArtClient.TitleMatches("", ""));
+        // An album filed with its year: matched, and searched for, without it.
+        Assert.True(MusicITunesArtClient.TitleMatches("Eagles (1972)", "Eagles"));
+        var search = MusicITunesArtClient.SearchUrl("Eagles", "Eagles (1972)");
+        Assert.Contains("term=Eagles%20Eagles&", search);
+        Assert.DoesNotContain("1972", search);
 
         Assert.True(MusicITunesArtClient.ArtistMatches("Simon & Garfunkel", "Simon and Garfunkel"));
         Assert.True(MusicITunesArtClient.ArtistMatches("Beyonce", "Beyoncé"));
@@ -251,6 +256,37 @@ public sealed class MusicCoverTests : IDisposable
         using var saved = await Image.LoadAsync(destination, Ct);
         Assert.Equal((1500, 1500), (saved.Width, saved.Height));
         Assert.IsType<SixLabors.ImageSharp.Formats.Jpeg.JpegFormat>(saved.Metadata.DecodedImageFormat);
+    }
+
+    // Albums marked "no cover" before the iTunes source existed are re-asked once, on the next
+    // scan, rather than a month later.
+    [Fact]
+    public async Task AnOlderLibrary_RechecksCoverlessAlbumsOnce()
+    {
+        var now = DateTimeOffset.UtcNow;
+        using (var store = new SqliteMusicStore(_data))
+        {
+            await store.SetArtAsync(new MusicArtRecord("album:bare", null, MusicArtSources.None, now), Ct);
+            await store.SetArtAsync(new MusicArtRecord("album:found", "/art/f.jpg", MusicArtSources.CoverArtArchive, now), Ct);
+        }
+        // A music.db from before the recheck.
+        using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={Path.Combine(_data, "music.db")};Pooling=False"))
+        {
+            connection.Open();
+            using var forget = connection.CreateCommand();
+            forget.CommandText = "DELETE FROM MusicState WHERE Key = 'art.itunesRecheck'";
+            forget.ExecuteNonQuery();
+        }
+        using (var store = new SqliteMusicStore(_data))
+        {
+            var art = await store.GetArtAsync(Ct);
+            Assert.True(art["album:bare"].CheckedAt < now.AddYears(-1));
+            Assert.True(art["album:found"].CheckedAt >= now.AddSeconds(-5));
+            await store.SetArtAsync(new MusicArtRecord("album:bare", null, MusicArtSources.None, now), Ct);
+        }
+        // Only once.
+        using (var store = new SqliteMusicStore(_data))
+            Assert.True((await store.GetArtAsync(Ct))["album:bare"].CheckedAt >= now.AddSeconds(-5));
     }
 
     [Fact]
@@ -384,6 +420,37 @@ public sealed class MusicCoverTests : IDisposable
         catalog = await rig.CatalogAsync();
         Assert.Equal(MusicArtSources.ITunes, (await rig.ArtAsync(Album(catalog, "Archive Down")))!.Source);
         Assert.Equal(MusicArtSources.ITunes, (await rig.ArtAsync(Album(catalog, "Apple Down")))!.Source);
+    }
+
+    // MusicBrainz answers 503 often. That alone mustn't keep an album bare when Apple has it; and
+    // when Apple has nothing either, the album comes up again in a day, not a month.
+    [Fact]
+    public async Task MusicBrainzDown_StillTriesITunes()
+    {
+        if (!await MusicTestAudio.FfmpegAvailableAsync()) Assert.Skip("needs a real ffmpeg on PATH");
+        await MakeAlbumAsync("Band", "On Apple");
+        await MakeAlbumAsync("Band", "Nowhere");
+        var internet = new FakeInternet
+        {
+            Route = uri =>
+            {
+                var url = Uri.UnescapeDataString(uri.AbsoluteUri);
+                if (uri.Host == "musicbrainz.org") return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+                if (uri.Host == "itunes.apple.com")
+                    return url.Contains("On Apple")
+                        ? Json(ITunesResults((31, "On Apple", "Band", "https://is1-ssl.mzstatic.com/image/thumb/y/100x100bb.jpg")))
+                        : Json("""{ "resultCount": 0, "results": [] }""");
+                if (uri.Host == "is1-ssl.mzstatic.com") return Bytes(Png(600, 5));
+                return null;
+            }
+        };
+        using var rig = await NewRigAsync(internet);
+        await rig.ScanAsync();
+        var catalog = await rig.CatalogAsync();
+        Assert.Equal(MusicArtSources.ITunes, (await rig.ArtAsync(Album(catalog, "On Apple")))!.Source);
+        var nowhere = (await rig.ArtAsync(Album(catalog, "Nowhere")))!;
+        Assert.Equal(MusicArtSources.None, nowhere.Source);
+        Assert.True(nowhere.CheckedAt < DateTimeOffset.UtcNow - TimeSpan.FromDays(28), "due again within a day or so");
     }
 
     // MARK: - Covers set by hand

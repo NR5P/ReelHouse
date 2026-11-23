@@ -216,6 +216,22 @@ public static partial class MusicText
     // "Rumours - Remastered" are all "rumours", so a list or a download never fetches an album
     // again because the copy here came out under another edition's name. Only brackets and dash
     // tails made of edition words go: "Greatest Hits Vol. 2" and "Live at Leeds" stay themselves.
+    // The title as written, without an edition or year tail - what to search for online:
+    // "Eagles (1972)" is "Eagles", "Rumours (Super Deluxe)" is "Rumours".
+    public static string EditionlessTitle(string? title)
+    {
+        var text = Whitespace().Replace(title ?? "", " ").Trim();
+        if (text.Length == 0) return text;
+        string before;
+        do
+        {
+            before = text;
+            text = EditionTailAnyCase().Replace(text, "").Trim();
+        }
+        while (text != before && text.Length > 0);
+        return text.Length == 0 ? Whitespace().Replace(title!, " ").Trim() : text;
+    }
+
     public static string EditionlessKey(string? title)
     {
         var key = Key(title);
@@ -234,8 +250,13 @@ public static partial class MusicText
     private static partial Regex Whitespace();
 
     // A trailing "(...)" / "[...]" / " - ..." whose every word is an edition word or a year.
-    [GeneratedRegex(@"\s*(?:[\(\[]\s*(?:(?:deluxe|edition|remaster|remastered|remasters|expanded|anniversary|explicit|clean|bonus|tracks?|special|collectors?|collector's|version|reissue|mono|stereo|club|limited|super|legacy|definitive|complete|ultimate|platinum|international|japan|japanese|uk|us|eu|single|ep|lp|album|digital|hd|hi-res|24-bit|24bit|edit|re-release|anniversary|th|st|nd|rd|\d{1,4}(?:th|st|nd|rd)?|-|&|and|the|of|cd|disc|\d)\s*)+[\)\]]|\s+-\s+(?:(?:deluxe|edition|remaster|remastered|expanded|anniversary|explicit|special|version|reissue|mono|stereo|single|ep|\d{4})\s*)+)$")]
+    private const string EditionTailPattern = @"\s*(?:[\(\[]\s*(?:(?:deluxe|edition|remaster|remastered|remasters|expanded|anniversary|explicit|clean|bonus|tracks?|special|collectors?|collector's|version|reissue|mono|stereo|club|limited|super|legacy|definitive|complete|ultimate|platinum|international|japan|japanese|uk|us|eu|single|ep|lp|album|digital|hd|hi-res|24-bit|24bit|edit|re-release|anniversary|th|st|nd|rd|\d{1,4}(?:th|st|nd|rd)?|-|&|and|the|of|cd|disc|\d)\s*)+[\)\]]|\s+-\s+(?:(?:deluxe|edition|remaster|remastered|expanded|anniversary|explicit|special|version|reissue|mono|stereo|single|ep|\d{4})\s*)+)$";
+
+    [GeneratedRegex(EditionTailPattern)]
     private static partial Regex EditionTail();
+
+    [GeneratedRegex(EditionTailPattern, RegexOptions.IgnoreCase)]
+    private static partial Regex EditionTailAnyCase();
 
     [GeneratedRegex(@"[^\p{L}\p{Nd}]+")]
     private static partial Regex NonWord();

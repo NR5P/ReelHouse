@@ -159,14 +159,17 @@ saved list, so a computer signed in to for Movies already works here.
   4. if `fetchArtworkOnline`: the Cover Art Archive (`caa`), by the MusicBrainz release or
      release-group id in the tags, else a MusicBrainz search for the album (at most one request a
      second);
-  5. if `fetchArtworkOnline`, and only when the Cover Art Archive has nothing or MusicBrainz knows
-     no such album: Apple's iTunes search (`itunes`, the 600×600 artwork). A result is used only
-     when its title and artist match the album's (edition tails such as "(Remastered)" or
-     "- Deluxe Edition" aside; "Rumours Live" is not "Rumours"). Searches are kept at least 3 s
-     apart.
+  5. if `fetchArtworkOnline`, when the Cover Art Archive has nothing, MusicBrainz knows no such
+     album, or MusicBrainz can't be reached right now (it answers 503 often): Apple's iTunes
+     search (`itunes`, the 600×600 artwork). A result is used only when its title and artist match
+     the album's (edition tails such as "(Remastered)" or "- Deluxe Edition" and a year such as
+     "(1972)" aside; "Rumours Live" is not "Rumours"). Both MusicBrainz and Apple are searched
+     for the title without those tails. Searches are kept at least 3 s apart.
   6. nothing (`none`). An album with no cover is looked for again after 30 days, or at once with
-     "find missing covers now". A network error or timeout from either online source records
-     nothing, so the next scan tries again; it is never taken as `none`.
+     "find missing covers now"; when MusicBrainz couldn't be reached and Apple had nothing, again
+     after a day. A network error or timeout from both online sources records nothing, so the
+     next scan tries again. Albums marked `none` before the iTunes source existed are looked for
+     again once, on the first scan after upgrading.
 - Artist images: `artist.jpg` in the artist folder. Without one, `artUrl` is the art of the
   artist's newest album.
 - Lyrics, in order of preference: a sidecar `<file>.lrc` (synced); embedded lyrics (USLT or the

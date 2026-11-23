@@ -206,14 +206,17 @@ public sealed class MusicCoverArtClient(IHttpClientFactory http, ILogger<MusicCo
     // The release group's id on MusicBrainz for an album, or null when nothing matches well.
     public async Task<string?> FindReleaseGroupAsync(string artist, string album, CancellationToken cancellationToken)
     {
-        var query = $"releasegroup:\"{Escape(album)}\"" + (MusicAlbumRules.IsVariousArtists(artist) ? "" : $" AND artist:\"{Escape(artist)}\"");
+        // Without an edition or year tail ("Eagles (1972)" is the release group "Eagles").
+        var title = MusicText.EditionlessTitle(album);
+        var key = MusicText.EditionlessKey(album);
+        var query = $"releasegroup:\"{Escape(title)}\"" + (MusicAlbumRules.IsVariousArtists(artist) ? "" : $" AND artist:\"{Escape(artist)}\"");
         using var document = await MusicBrainzAsync($"https://musicbrainz.org/ws/2/release-group/?query={Uri.EscapeDataString(query)}&fmt=json&limit=5", cancellationToken);
         if (document is null || !document.RootElement.TryGetProperty("release-groups", out var groups)) return null;
         foreach (var group in groups.EnumerateArray())
         {
             var score = group.TryGetProperty("score", out var s) && s.TryGetInt32(out var value) ? value : 0;
-            var title = group.TryGetProperty("title", out var t) ? t.GetString() : null;
-            if (score >= 90 && MusicText.Key(title) == MusicText.Key(album) && group.TryGetProperty("id", out var id))
+            var name = group.TryGetProperty("title", out var t) ? t.GetString() : null;
+            if (score >= 90 && MusicText.EditionlessKey(name) == key && group.TryGetProperty("id", out var id))
                 return id.GetString();
         }
         return null;
@@ -311,9 +314,11 @@ public sealed class MusicITunesArtClient(IHttpClientFactory http, MusicArtDownlo
     // How far apart searches are kept. Tests shorten it.
     public TimeSpan Spacing { get; init; } = DefaultSpacing;
 
+    // Searched for without an edition or year tail: an album filed as "Eagles (1972)" is "Eagles".
     public static string SearchUrl(string artist, string album)
     {
-        var term = MusicAlbumRules.IsVariousArtists(artist) ? album : $"{artist} {album}";
+        var title = MusicText.EditionlessTitle(album);
+        var term = MusicAlbumRules.IsVariousArtists(artist) ? title : $"{artist} {title}";
         return $"https://itunes.apple.com/search?term={Uri.EscapeDataString(term)}&entity=album&limit=10&media=music";
     }
 
