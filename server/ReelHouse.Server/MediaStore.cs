@@ -33,6 +33,12 @@ public interface IMediaStore
     Task<int> ReconcileMissingAsync(Guid libraryId, IReadOnlySet<Guid> presentIds, CancellationToken cancellationToken);
     Task<int> PurgeMissingAsync(DateTimeOffset missingSince, CancellationToken cancellationToken);
     Task<IReadOnlyList<MediaItem>> ItemsNeedingMetadataAsync(DateTimeOffset retryFailedBefore, int limit, CancellationToken cancellationToken);
+    // The admin's poster override (an uploaded file, a picked TMDB path, or neither). The only
+    // write of those two fields: a rescan and a metadata update both leave them as they are.
+    Task SetPosterOverrideAsync(Guid id, string? custom, string? chosen, CancellationToken cancellationToken);
+    // Sends every movie and show with no poster of any kind (and no manual lock) back through the
+    // metadata pass now, matched or not. Returns how many.
+    Task<int> QueueTitlesWithoutPostersAsync(CancellationToken cancellationToken);
     Task<IReadOnlyList<MediaItem>> ItemsNeedingProbeAsync(int limit, CancellationToken cancellationToken);
     Task<(int Movies, int Shows, int Episodes)> CountsAsync(CancellationToken cancellationToken);
     Task<IReadOnlyList<string>> GenresAsync(string? kind, Guid? libraryId, CancellationToken cancellationToken);
@@ -396,7 +402,8 @@ public sealed class SqliteMediaStore : IMediaStore, IDisposable
                 // A rescan rewrites what the files say (title, path, size, season) and leaves what
                 // TMDB and ffprobe said alone - those columns are only in the INSERT half. Artwork
                 // is both: the local files come from the scan, the TMDB paths are kept. (Replacing
-                // the whole blob used to wipe every TMDB poster on each rescan.)
+                // the whole blob used to wipe every TMDB poster on each rescan.) The admin's poster
+                // override is kept the same way.
                 command.CommandText = """
                     INSERT INTO MediaItems (Id, LibraryId, Kind, ParentId, Title, SortTitle, Year, SeasonNumber, EpisodeNumber, Path,
                         FileSize, FileModifiedAt, AddedAt, Missing, MissingSince, TmdbId, Rating, Genres, MetadataFetchedAt, MetadataLocked,
@@ -415,7 +422,9 @@ public sealed class SqliteMediaStore : IMediaStore, IDisposable
                         Artwork = json_set(excluded.Artwork,
                             '$.posterRemote', json_extract(Artwork, '$.posterRemote'),
                             '$.backdropRemote', json_extract(Artwork, '$.backdropRemote'),
-                            '$.thumbRemote', json_extract(Artwork, '$.thumbRemote')),
+                            '$.thumbRemote', json_extract(Artwork, '$.thumbRemote'),
+                            '$.posterCustom', json_extract(Artwork, '$.posterCustom'),
+                            '$.posterChosen', json_extract(Artwork, '$.posterChosen')),
                         ProbedAt = CASE WHEN FileSize IS excluded.FileSize AND FileModifiedAt IS excluded.FileModifiedAt THEN ProbedAt ELSE NULL END
                     """;
                 command.Parameters.AddWithValue("$id", item.Id.ToString("N"));
@@ -454,9 +463,14 @@ public sealed class SqliteMediaStore : IMediaStore, IDisposable
         try
         {
             using var command = _connection.CreateCommand();
+            // The poster override is the admin's (SetPosterOverrideAsync), not TMDB's: an item
+            // read before the admin changed it must not put the old one back.
             command.CommandText = """
                 UPDATE MediaItems SET Title = $title, SortTitle = $sort, Year = $year, TmdbId = $tmdb, Rating = $rating, Genres = $genres,
-                    MetadataFetchedAt = $fetched, MetadataLocked = $locked, Metadata = $metadata, Artwork = $artwork
+                    MetadataFetchedAt = $fetched, MetadataLocked = $locked, Metadata = $metadata,
+                    Artwork = json_set($artwork,
+                        '$.posterCustom', json_extract(Artwork, '$.posterCustom'),
+                        '$.posterChosen', json_extract(Artwork, '$.posterChosen'))
                 WHERE Id = $id
                 """;
             command.Parameters.AddWithValue("$id", item.Id.ToString("N"));
@@ -563,6 +577,42 @@ public sealed class SqliteMediaStore : IMediaStore, IDisposable
             var list = new List<MediaItem>();
             while (await reader.ReadAsync(cancellationToken)) list.Add(ReadItem(reader));
             return list;
+        }
+        finally { _lock.Release(); }
+    }
+
+    public async Task SetPosterOverrideAsync(Guid id, string? custom, string? chosen, CancellationToken cancellationToken)
+    {
+        await _lock.WaitAsync(cancellationToken);
+        try
+        {
+            using var command = _connection.CreateCommand();
+            command.CommandText = "UPDATE MediaItems SET Artwork = json_set(Artwork, '$.posterCustom', $custom, '$.posterChosen', $chosen) WHERE Id = $id";
+            command.Parameters.AddWithValue("$id", id.ToString("N"));
+            command.Parameters.AddWithValue("$custom", (object?)custom ?? DBNull.Value);
+            command.Parameters.AddWithValue("$chosen", (object?)chosen ?? DBNull.Value);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        finally { _lock.Release(); }
+    }
+
+    public async Task<int> QueueTitlesWithoutPostersAsync(CancellationToken cancellationToken)
+    {
+        await _lock.WaitAsync(cancellationToken);
+        try
+        {
+            using var command = _connection.CreateCommand();
+            // A matched title keeps its match on the way through (MediaScanner.MetadataPassAsync);
+            // an unmatched one gets searched for again without waiting out the retry interval.
+            command.CommandText = """
+                UPDATE MediaItems SET MetadataFetchedAt = NULL
+                WHERE Kind IN ('movie', 'show') AND Missing = 0 AND MetadataLocked = 0
+                  AND json_extract(Artwork, '$.posterCustom') IS NULL
+                  AND json_extract(Artwork, '$.posterChosen') IS NULL
+                  AND json_extract(Artwork, '$.posterLocal') IS NULL
+                  AND json_extract(Artwork, '$.posterRemote') IS NULL
+                """;
+            return await command.ExecuteNonQueryAsync(cancellationToken);
         }
         finally { _lock.Release(); }
     }
@@ -991,6 +1041,8 @@ public sealed class SqliteMediaStore : IMediaStore, IDisposable
 
     private sealed class ArtworkBlob
     {
+        public string? PosterCustom { get; set; }
+        public string? PosterChosen { get; set; }
         public string? PosterLocal { get; set; }
         public string? PosterRemote { get; set; }
         public string? BackdropLocal { get; set; }
@@ -1000,12 +1052,14 @@ public sealed class SqliteMediaStore : IMediaStore, IDisposable
 
         public static ArtworkBlob From(MediaItem item) => new()
         {
+            PosterCustom = item.PosterCustom, PosterChosen = item.PosterChosen,
             PosterLocal = item.PosterLocal, PosterRemote = item.PosterRemote, BackdropLocal = item.BackdropLocal,
             BackdropRemote = item.BackdropRemote, ThumbLocal = item.ThumbLocal, ThumbRemote = item.ThumbRemote
         };
 
         public void ApplyTo(MediaItem item)
         {
+            item.PosterCustom = PosterCustom; item.PosterChosen = PosterChosen;
             item.PosterLocal = PosterLocal; item.PosterRemote = PosterRemote; item.BackdropLocal = BackdropLocal;
             item.BackdropRemote = BackdropRemote; item.ThumbLocal = ThumbLocal; item.ThumbRemote = ThumbRemote;
         }

@@ -96,7 +96,11 @@ window.ReelHouseMovies = (function () {
   // fetch + JSON with the error already worded, so every caller can just show res.error.
   async function request(url, options = {}) {
     const init = { method: options.method || "GET", headers: {} };
-    if (options.body !== undefined) {
+    // A file sent as it is (a poster upload), not wrapped in JSON or a form.
+    if (options.raw !== undefined) {
+      init.body = options.raw;
+      init.headers["Content-Type"] = options.raw.type || "application/octet-stream";
+    } else if (options.body !== undefined) {
       init.body = JSON.stringify(options.body);
       init.headers["Content-Type"] = "application/json";
     }
@@ -871,6 +875,7 @@ window.ReelHouseMovies = (function () {
     if (item.kind !== "episode") out.push(listButton(item));
     if (isAdmin) {
       out.push(`<button type="button" class="mv-btn mv-btn-quiet" data-act="fix-match">Fix match&hellip;</button>`);
+      if (item.kind === "movie" || item.kind === "show") out.push(`<button type="button" class="mv-btn mv-btn-quiet" data-act="change-poster">Change poster&hellip;</button>`);
       out.push(`<button type="button" class="mv-btn mv-btn-quiet" data-act="refresh-meta">Refresh metadata</button>`);
     }
     if (item.canDelete) out.push(`<button type="button" class="mv-btn mv-danger" data-act="delete-item">Delete</button>`);
@@ -1187,6 +1192,122 @@ window.ReelHouseMovies = (function () {
     showToast("Unlocked and re-matched", true);
   }
 
+  // ---- change poster --------------------------------------------------------------------------
+
+  // A title's TMDB posters to pick from, an upload of its own, or back to automatic. What wins is
+  // the server's call (upload > picked > a poster file beside the video > TMDB's default); the
+  // detail it answers with carries the new posterUrl (a new ?v=), so the page just redraws.
+  const POSTER_SOURCES = {
+    custom: "an uploaded image",
+    chosen: "a poster picked from TMDB",
+    local: "the poster file beside the video",
+    tmdb: "TMDB's default poster",
+    none: "nothing yet"
+  };
+  const MAX_POSTER_BYTES = 15 * 1024 * 1024;
+
+  function posterIntro() {
+    return `Now showing ${escapeHtml(POSTER_SOURCES[detail.posterSource] || POSTER_SOURCES.none)}. Pick one of TMDB's posters or upload your own - either beats a poster file in the folder.`;
+  }
+
+  function posterFoot() {
+    const manual = detail.posterSource === "custom" || detail.posterSource === "chosen";
+    return `<button type="button" class="mv-btn mv-foot-start" data-mact="poster-upload" id="mv-poster-upload">${ICON.plus}<span>Upload image&hellip;</span></button>
+      <input type="file" class="hidden" id="mv-poster-file" accept="image/jpeg,image/png,image/webp" hidden>
+      ${manual ? `<button type="button" class="mv-btn mv-btn-quiet" data-mact="poster-reset" title="Forget the upload or pick and use the automatic poster">Reset to automatic</button>` : ""}
+      <button type="button" class="mv-btn mv-btn-quiet" data-mact="close">Close</button>`;
+  }
+
+  function openPosterPicker() {
+    if (!detail) return;
+    openModal(`${modalHeader("Change poster")}
+      <p class="mv-modal-intro" id="mv-poster-intro">${posterIntro()}</p>
+      <div class="mv-poster-grid" id="mv-poster-grid">${loadingMarkup("asking TMDB")}</div>
+      <div class="mv-modal-foot" id="mv-poster-foot">${posterFoot()}</div>`);
+    loadPosterChoices(detail.id);
+  }
+
+  async function loadPosterChoices(id) {
+    const res = await request(`/api/media/items/${enc(id)}/posters`);
+    const grid = el("mv-poster-grid");
+    if (!grid || !detail || detail.id !== id) return;
+    if (!res.ok) { grid.innerHTML = `<div class="mv-empty mv-error">${escapeHtml(res.error)}</div>`; return; }
+    const data = res.data || {};
+    const list = Array.isArray(data.posters) ? data.posters : [];
+    const current = data.current && data.current.tmdbPath;
+    if (!list.length) { grid.innerHTML = `<div class="mv-empty">TMDB has no posters for this title. Upload one instead.</div>`; return; }
+    grid.innerHTML = list.map((p) => {
+      const on = current && p.path === current;
+      const label = [p.language ? p.language.toUpperCase() : "no text", p.width && p.height ? `${p.width}×${p.height}` : ""].filter(Boolean).join(" · ");
+      return `<button type="button" class="mv-poster-choice ${on ? "current" : ""}" data-mact="poster-pick" data-path="${escapeHtml(p.path)}" aria-pressed="${on ? "true" : "false"}" title="${on ? "Showing now" : "Use this poster"}">
+          ${art(p.url, "mv-poster mv-match-poster", detail.title, "")}
+          ${on ? `<span class="mv-poster-now">${ICON.check}<span>now</span></span>` : ""}
+          <span class="mv-poster-meta">${escapeHtml(label)}</span>
+        </button>`;
+    }).join("");
+    wireImages(grid);
+  }
+
+  function posterChanged(res, message) {
+    closeModal();
+    detail = res.data || detail;
+    homeData = null;
+    drawDetail();
+    showToast(message, true);
+  }
+
+  async function pickPoster(button, path) {
+    if (!detail || button.classList.contains("current")) return;
+    for (const b of document.querySelectorAll("#mv-poster-grid .mv-poster-choice")) b.disabled = true;
+    button.classList.add("mv-working");
+    const res = await request(`/api/media/items/${enc(detail.id)}/poster`, { method: "PUT", body: { tmdbPath: path } });
+    if (!res.ok) {
+      for (const b of document.querySelectorAll("#mv-poster-grid .mv-poster-choice")) b.disabled = false;
+      button.classList.remove("mv-working");
+      showToast(res.error, false);
+      return;
+    }
+    posterChanged(res, "Poster changed");
+  }
+
+  async function uploadPoster(input) {
+    const file = input.files && input.files[0];
+    if (!file || !detail) return;
+    if (file.size > MAX_POSTER_BYTES) { showToast("That image is too big. Use one under 15 MB.", false); input.value = ""; return; }
+    const button = el("mv-poster-upload");
+    if (button) { button.disabled = true; button.classList.add("mv-working"); }
+    const res = await request(`/api/media/items/${enc(detail.id)}/poster`, { method: "POST", raw: file });
+    if (button) { button.disabled = false; button.classList.remove("mv-working"); }
+    input.value = "";
+    if (!res.ok) { showToast(res.error, false); return; }
+    posterChanged(res, "Poster uploaded");
+  }
+
+  async function resetPoster(button) {
+    if (!detail) return;
+    button.disabled = true;
+    const res = await request(`/api/media/items/${enc(detail.id)}/poster`, { method: "DELETE" });
+    button.disabled = false;
+    if (!res.ok) { showToast(res.error, false); return; }
+    posterChanged(res, "Poster back to automatic");
+  }
+
+  // Libraries page: every movie and show still without a poster goes back through TMDB now.
+  async function refreshMissingPosters(button) {
+    button.disabled = true;
+    button.classList.add("mv-working");
+    const res = await request("/api/media/artwork/refresh-missing", { method: "POST" });
+    button.disabled = false;
+    button.classList.remove("mv-working");
+    if (!res.ok) { showToast(res.error, false); return; }
+    const queued = (res.data && res.data.queued) || 0;
+    if (!queued) { showToast("Every title already has a poster", true); return; }
+    homeData = null;
+    showToast(`Looking for posters for ${plural(queued, "title")}`, true);
+    wasScanning = true;
+    refreshStatus();
+  }
+
   // ---- folder browser -------------------------------------------------------------------------
 
   // Folders on the server, and folders shared by other computers on the network (read over SMB
@@ -1394,6 +1515,7 @@ window.ReelHouseMovies = (function () {
         <div><h2 class="mv-page-title">Libraries</h2><div class="mv-page-sub">The folders the catalog is built from - on the server, or shared from another computer on the network.</div></div>
         <div class="mv-actions">
           <button type="button" class="mv-btn mv-btn-glass" data-act="scan-all">${ICON.restart}<span>Scan all</span></button>
+          <button type="button" class="mv-btn mv-btn-glass" data-act="refresh-missing-posters" title="Look up every movie and show that has no poster on TMDB again, now">${ICON.search}<span>Find missing posters</span></button>
           <button type="button" class="mv-btn mv-btn-primary" data-act="lib-add"><span>+ Add library</span></button>
         </div>
       </div>
@@ -2636,6 +2758,8 @@ window.ReelHouseMovies = (function () {
         case "season": detailSeason = Number(target.dataset.n); drawDetail(); break;
         case "season-watched": if (detail) setWatched(detail.id, target.dataset.value === "true", target.dataset.n); break;
         case "fix-match": openFixMatch(); break;
+        case "change-poster": openPosterPicker(); break;
+        case "refresh-missing-posters": refreshMissingPosters(target); break;
         case "refresh-meta": refreshMetadata(target); break;
         case "delete-item": deleteItem(target); break;
         case "list": setInList(target); break;
@@ -2704,6 +2828,9 @@ window.ReelHouseMovies = (function () {
     el("mv-libraries-btn").addEventListener("click", () => go({ name: "libraries" }));
 
     const modal = el("mv-modal");
+    modal.addEventListener("change", (e) => {
+      if (e.target.id === "mv-poster-file") uploadPoster(e.target);
+    });
     modal.addEventListener("submit", (e) => {
       if (e.target.id === "mv-signin") { e.preventDefault(); submitSignIn(e.target); }
       if (e.target.id === "mv-newfolder" && folderPick) {
@@ -2728,6 +2855,9 @@ window.ReelHouseMovies = (function () {
         case "import-list": closeModal(); if (window.MediaImport) window.MediaImport.open("movies"); break;
         case "match": applyMatch(target, target.dataset.tmdb); break;
         case "unlock": unlockMatch(target); break;
+        case "poster-pick": pickPoster(target, target.dataset.path); break;
+        case "poster-upload": el("mv-poster-file")?.click(); break;
+        case "poster-reset": resetPoster(target); break;
         case "folder": loadFolder(target.dataset.path); break;
         case "go": loadFolder(el("mv-browse-input").value.trim()); break;
         case "net-add": showSignIn({}); break;

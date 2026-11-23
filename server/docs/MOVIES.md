@@ -202,7 +202,10 @@ NetworkComputer = { "id": "…", "name": "Den PC", "host": "192.168.1.20", "user
   }
   ```
   `file`, `audioTracks` and `subtitles` are null for shows; `seasons` is null for movies and
-  episodes. Episode detail includes `showId` and the episode's own `file`. Subtitle `index` counts
+  episodes. `posterSource` says where the poster comes from: `custom` (an admin uploaded it),
+  `chosen` (an admin picked it from TMDB's posters), `local` (a poster file beside the video),
+  `tmdb` (TMDB's default) or `none`; offer "Reset to automatic" only for `custom` and `chosen`.
+  Missing on older servers. Episode detail includes `showId` and the episode's own `file`. Subtitle `index` counts
   text subtitles only (bitmap subtitles are not offered). `canDelete` is true when the caller may
   delete this title (admins; movies on the server's own disks).
 - `DELETE /api/media/items/{id}` (admin) → **204**. Deletes a movie from the disk and forgets it,
@@ -217,7 +220,16 @@ NetworkComputer = { "id": "…", "name": "Den PC", "host": "192.168.1.20", "user
   64/128/200/300/400/600/800/1200), made once and kept in `<data>/sized-art/`. A sized copy is
   always a baseline JPEG: Roku can't draw progressive JPEGs, and many TMDB posters and podcast
   covers are progressive, so a progressive original gets a copy even when it is already small.
-- A library rescan keeps each title's TMDB poster and backdrop. (Before 2026-11-22 it replaced
+- **Which poster**, first that exists: an uploaded one (`custom`), a TMDB poster an admin picked
+  (`chosen`), a poster file beside the video (`local`), TMDB's default (`tmdb`). A choice made in
+  the app beats a stray `folder.jpg`. Backdrops and thumbs are still local file first, then TMDB.
+  Episodes show their show's poster, custom ones included. Every art URL carries `?v=`, a hash of
+  where the picture comes from, so a changed poster is a new URL and the day's caching is safe.
+- TMDB images are cached under `<data>/media-art/` named after the item, the kind and the TMDB
+  path, so a new match (or a picked poster) downloads a new file instead of serving the old one.
+  (Before 2026-11-22 the name left the TMDB path out, and after "Fix match" the previous title's
+  poster kept being served.)
+- A library rescan keeps each title's TMDB poster and backdrop, and any custom or chosen poster. (Before 2026-11-22 it replaced
   the stored artwork with what the files alone say, so every film without a `folder.jpg` lost its
   poster on the next scan; the first start of a newer server sends those titles back through
   TMDB, keeping their match.)
@@ -307,7 +319,34 @@ Playback also returns **503** `{ "error": "…" }` when ffmpeg is missing and th
 - `POST /api/media/items/{id}/match` body `{ "tmdbId": 12092 }` → ItemDetail, refetched and locked
   to that match so later scans keep it.
 - `POST /api/media/items/{id}/refresh` → ItemDetail, refetched from TMDB (unlocks a manual match
-  when body is `{ "unlock": true }`).
+  when body is `{ "unlock": true }`). A refresh never touches a custom or chosen poster; a match
+  that changes the TMDB title forgets a chosen poster (it was the old title's) but keeps an upload.
+
+### Posters (admin; movies and shows, 400 for an episode - change its show's)
+
+- `GET /api/media/items/{id}/posters` →
+  ```json
+  { "current": { "source": "custom|chosen|local|tmdb|none", "tmdbPath": "/abc.jpg" },
+    "posters": [ { "path": "/abc.jpg", "url": "https://image.tmdb.org/t/p/w342/abc.jpg",
+                   "width": 2000, "height": 3000, "language": "en" } ] }
+  ```
+  The title's posters on TMDB in English or without text (`language` null), best voted first, at
+  most 60. `current.tmdbPath` is the TMDB poster on show now (for `chosen` and `tmdb`, else null), to
+  mark in a picker. **400** `{ error }` when the title isn't matched on TMDB or no TMDB key is set;
+  **502** when TMDB doesn't answer.
+- `PUT /api/media/items/{id}/poster` body `{ "tmdbPath": "/abc.jpg" }` → ItemDetail. Uses that TMDB
+  poster (`chosen`) and drops an upload. Only a path from that title's own list is accepted (400
+  otherwise).
+- `POST /api/media/items/{id}/poster` with the image itself as the body (`Content-Type: image/jpeg`,
+  `image/png` or `image/webp`; not a form) → ItemDetail. At most 15 MB (**413** above that); **400**
+  `{ error }` for anything that doesn't decode as a JPEG, PNG or WebP. Saved re-encoded as a JPEG no
+  bigger than 2000 px a side under `<data>/media-art/custom/`; `?size=` works on it like on any art.
+- `DELETE /api/media/items/{id}/poster` → ItemDetail, back to automatic (`local` or `tmdb`): forgets
+  the pick and deletes the upload.
+- `POST /api/media/artwork/refresh-missing` → `{ "queued": 4 }`. Sends every movie and show with no
+  poster at all (no upload, pick, local file or TMDB poster; manually locked matches left out)
+  back through the TMDB pass straight away, matched or not, and starts that pass (or queues a scan
+  if one is running). **400** `{ error }` without a TMDB key.
 
 ## Settings section `media` (Settings → MOVIES & TV, `PUT /api/settings/media`)
 
@@ -330,9 +369,10 @@ files whose name contains "sample" or "trailer" are skipped.
   `S01E02`, `1x02`, `Season 1/…E02` or `Episode 2`; the season comes from the file name, else the
   `Season N` folder, else 1. Files with no episode number keep their cleaned file name as the title
   and sort after numbered ones. A loose video file at the top level is a one-episode show.
-- **Local artwork wins** over TMDB: `poster.jpg`, `folder.jpg`, `cover.jpg`, `<file>-poster.jpg`,
+- **Local artwork wins** over TMDB's: `poster.jpg`, `folder.jpg`, `cover.jpg`, `<file>-poster.jpg`,
   `backdrop.jpg`, `fanart.jpg`, `<file>-backdrop.jpg`, `<file>-thumb.jpg`, `<file>.jpg`, season
-  folder `poster.jpg`. TMDB artwork is downloaded once into `<data>/media-art/`.
+  folder `poster.jpg`. TMDB artwork is downloaded once into `<data>/media-art/`. A poster an admin
+  uploaded or picked (see Posters) wins over both.
 - **Subtitles**: embedded text tracks (SubRip, ASS/SSA, WebVTT, mov_text) and sidecar
   `<file>.srt`, `<file>.en.srt`, `.vtt`, `.ass`.
 
@@ -342,4 +382,5 @@ files whose name contains "sample" or "trailer" are skipped.
 `MediaState`, `MediaPlays` (play history, seeded with one play per progress row when first
 created), `MediaWatchlist` (My List). The catalog and the artwork cache are rebuilt by a rescan; everything
 else lives only in the data folder, so copy that folder (with the server stopped) to back it up. HLS sessions live under `<data>/media-hls/`, extracted
-subtitles under `<data>/media-subs/`.
+subtitles under `<data>/media-subs/`. Custom and chosen posters are not something a rescan can
+bring back: the choices are in `media.db` and uploads under `<data>/media-art/custom/`.

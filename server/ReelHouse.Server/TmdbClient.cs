@@ -139,6 +139,27 @@ public sealed class TmdbClient(IHttpClientFactory httpClientFactory, AppSettings
         return new Season(seasonNumber, String(root, "name") ?? $"Season {seasonNumber}", String(root, "poster_path"), episodes);
     }
 
+    public sealed record Poster(string Path, int? Width, int? Height, string? Language, double? Rating);
+
+    // Every poster TMDB has for a movie or show, in English or without text, best voted first.
+    // Null when TMDB does not know the id.
+    public async Task<IReadOnlyList<Poster>?> GetPostersAsync(string kind, int tmdbId, CancellationToken cancellationToken)
+    {
+        using var document = await GetAsync($"/{(kind == MediaKinds.Show ? "tv" : "movie")}/{tmdbId}/images",
+            new() { ["include_image_language"] = "en,null" }, cancellationToken);
+        if (document is null) return null;
+        var list = new List<Poster>();
+        if (document.RootElement.TryGetProperty("posters", out var posters) && posters.ValueKind == JsonValueKind.Array)
+            foreach (var poster in posters.EnumerateArray())
+            {
+                if (String(poster, "file_path") is not { Length: > 1 } path || path[0] != '/') continue;
+                list.Add(new Poster(path, Int(poster, "width"), Int(poster, "height"), Blank(String(poster, "iso_639_1")),
+                    poster.TryGetProperty("vote_average", out var vote) && vote.ValueKind == JsonValueKind.Number ? vote.GetDouble() : null));
+            }
+        // A stable sort, so TMDB's own order breaks ties.
+        return [.. list.OrderByDescending(p => p.Rating ?? 0)];
+    }
+
     // Fetches one image into the art cache. Returns false (and leaves nothing behind) on any
     // failure, so a caller can simply try again another day.
     public async Task<bool> DownloadImageAsync(string tmdbPath, string size, string destination, CancellationToken cancellationToken)

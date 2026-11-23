@@ -14,6 +14,15 @@ public static class MediaKinds
     public const string Episode = "episode";
 }
 
+public static class MediaPosterSources
+{
+    public const string Custom = "custom";
+    public const string Chosen = "chosen";
+    public const string Local = "local";
+    public const string Tmdb = "tmdb";
+    public const string None = "none";
+}
+
 public static class MediaLibraryKinds
 {
     public const string Movies = "movies";
@@ -76,7 +85,12 @@ public sealed class MediaItem
     public string? MetadataError { get; set; }
 
     // Artwork: a local file beside the video wins; otherwise the TMDB path, fetched into the art
-    // cache the first time anyone asks for it.
+    // cache the first time anyone asks for it. The poster has two more layers on top, both set
+    // only by an admin and never touched by a rescan or a metadata refresh (see PosterSource):
+    // an uploaded image (PosterCustom, a file under <data>/media-art/custom/) and a TMDB poster
+    // picked from the title's image list (PosterChosen, a TMDB path like PosterRemote).
+    public string? PosterCustom { get; set; }
+    public string? PosterChosen { get; set; }
     public string? PosterLocal { get; set; }
     public string? PosterRemote { get; set; }
     public string? BackdropLocal { get; set; }
@@ -106,7 +120,17 @@ public sealed class MediaItem
     public string? ProbeError { get; set; }
 
     public bool IsPlayable => Kind is MediaKinds.Movie or MediaKinds.Episode;
-    public bool HasPoster => PosterLocal is not null || PosterRemote is not null;
+    public bool HasPoster => PosterCustom is not null || PosterChosen is not null || PosterLocal is not null || PosterRemote is not null;
+
+    // Which layer the poster comes from, in order of precedence: an upload, a TMDB poster the
+    // admin picked, a file beside the video, TMDB's default. A deliberate choice in the app beats
+    // a stray folder.jpg.
+    public string PosterSource =>
+        PosterCustom is not null ? MediaPosterSources.Custom
+        : PosterChosen is not null ? MediaPosterSources.Chosen
+        : PosterLocal is not null ? MediaPosterSources.Local
+        : PosterRemote is not null ? MediaPosterSources.Tmdb
+        : MediaPosterSources.None;
     public bool HasBackdrop => BackdropLocal is not null || BackdropRemote is not null;
     public bool HasThumb => ThumbLocal is not null || ThumbRemote is not null;
 }
@@ -203,4 +227,10 @@ public sealed class MediaMatchInput
 public sealed class MediaRefreshInput
 {
     public bool Unlock { get; set; }
+}
+
+// PUT /api/media/items/{id}/poster: one of the title's TMDB posters, by its path ("/abc.jpg").
+public sealed class MediaPosterChoiceInput
+{
+    public string? TmdbPath { get; set; }
 }

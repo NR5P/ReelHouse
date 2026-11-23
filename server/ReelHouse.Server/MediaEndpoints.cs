@@ -969,14 +969,188 @@ public static class MediaEndpoints
             if (input?.Unlock == true) item.MetadataLocked = false;
             return await RefetchAsync(item, item.MetadataLocked ? item.TmdbId : null, context, store, scanner, ct, answerFor: id);
         }).RequireAuthorization("AdminOnly");
+
+        MapPosters(enabled);
+    }
+
+    // MARK: - Posters (admin)
+
+    // Precedence is MediaItem.PosterSource: upload > picked TMDB poster > file beside the video >
+    // TMDB's default. Movies and shows only; episodes show their show's poster.
+    private static void MapPosters(RouteGroupBuilder enabled)
+    {
+        enabled.MapGet("/items/{id:guid}/posters", async (Guid id, IMediaStore store, TmdbClient tmdb, CancellationToken ct) =>
+        {
+            var (item, problem) = await PosterTitleAsync(id, store, ct);
+            if (problem is not null) return problem;
+            var (posters, error) = await TmdbPostersAsync(item!, tmdb, ct);
+            if (error is not null) return error;
+            var source = item!.PosterSource;
+            return Results.Ok(new
+            {
+                current = new
+                {
+                    source,
+                    // The TMDB poster on show now, to mark in the picker (null for an upload or a local file).
+                    tmdbPath = source switch
+                    {
+                        MediaPosterSources.Chosen => item.PosterChosen,
+                        MediaPosterSources.Tmdb => item.PosterRemote,
+                        _ => null
+                    }
+                },
+                posters = posters!.Take(MaxPosterChoices).Select(p => new
+                {
+                    path = p.Path,
+                    url = TmdbClient.ImageUrl(p.Path, "w342"),
+                    width = p.Width,
+                    height = p.Height,
+                    language = p.Language
+                })
+            });
+        }).RequireAuthorization("AdminOnly");
+
+        enabled.MapPut("/items/{id:guid}/poster", async (Guid id, MediaPosterChoiceInput input, HttpContext context, IMediaStore store,
+            MediaScanner scanner, TmdbClient tmdb, MediaArtCache art, CancellationToken ct) =>
+        {
+            var (item, problem) = await PosterTitleAsync(id, store, ct);
+            if (problem is not null) return problem;
+            var path = input.TmdbPath?.Trim();
+            if (string.IsNullOrEmpty(path)) return Results.BadRequest(new { error = "Choose one of the posters." });
+            var (posters, error) = await TmdbPostersAsync(item!, tmdb, ct);
+            if (error is not null) return error;
+            // Only a path TMDB lists for this very title: the server downloads whatever this names.
+            if (!posters!.Any(p => string.Equals(p.Path, path, StringComparison.Ordinal)))
+                return Results.BadRequest(new { error = "That poster isn't one of this title's posters on TMDB." });
+            await store.SetPosterOverrideAsync(id, null, path, ct);
+            art.DeleteCustomPoster(item!.PosterCustom);
+            // Fetched now, so the page shows it the moment it redraws.
+            item.PosterCustom = null;
+            item.PosterChosen = path;
+            try { await scanner.ResolveArtworkAsync(item, "poster", ct); }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested) { }
+            return await DetailResultAsync(id, context, store, scanner, ct);
+        }).RequireAuthorization("AdminOnly");
+
+        // The image is the request body itself (image/jpeg, image/png or image/webp), not a form.
+        enabled.MapPost("/items/{id:guid}/poster", async (Guid id, HttpContext context, IMediaStore store, MediaScanner scanner,
+            MediaArtCache art, ILoggerFactory loggers, CancellationToken ct) =>
+        {
+            var (item, problem) = await PosterTitleAsync(id, store, ct);
+            if (problem is not null) return problem;
+            var tooBig = Results.Json(new { error = "That image is too big. Use one under 15 MB." }, statusCode: StatusCodes.Status413PayloadTooLarge);
+            if (context.Request.ContentLength is > MediaCustomPoster.MaxUploadBytes) return tooBig;
+            byte[] upload;
+            using (var buffer = new MemoryStream())
+            {
+                var chunk = new byte[81920];
+                int read;
+                while ((read = await context.Request.Body.ReadAsync(chunk, ct)) > 0)
+                {
+                    if (buffer.Length + read > MediaCustomPoster.MaxUploadBytes) return tooBig;
+                    buffer.Write(chunk, 0, read);
+                }
+                upload = buffer.ToArray();
+            }
+            var (jpeg, error) = await Task.Run(() => MediaCustomPoster.ToJpeg(upload), ct);
+            if (jpeg is null) return Results.BadRequest(new { error });
+
+            var path = art.CustomPosterPath(id, jpeg);
+            try
+            {
+                Directory.CreateDirectory(art.CustomRoot);
+                var temporary = $"{path}.{Guid.NewGuid():N}.tmp";
+                await File.WriteAllBytesAsync(temporary, jpeg, ct);
+                File.Move(temporary, path, overwrite: true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return Results.Json(new { error = $"Could not save the poster: {ex.Message}" }, statusCode: StatusCodes.Status500InternalServerError);
+            }
+            await store.SetPosterOverrideAsync(id, path, null, ct);
+            if (!string.Equals(item!.PosterCustom, path, StringComparison.Ordinal)) art.DeleteCustomPoster(item.PosterCustom);
+            loggers.CreateLogger("ReelHouse.Media").LogInformation("Media: custom poster for {Title}", item.Title);
+            return await DetailResultAsync(id, context, store, scanner, ct);
+        }).RequireAuthorization("AdminOnly");
+
+        // Back to automatic: the file beside the video if there is one, else TMDB's default.
+        enabled.MapDelete("/items/{id:guid}/poster", async (Guid id, HttpContext context, IMediaStore store, MediaScanner scanner,
+            MediaArtCache art, CancellationToken ct) =>
+        {
+            var (item, problem) = await PosterTitleAsync(id, store, ct);
+            if (problem is not null) return problem;
+            await store.SetPosterOverrideAsync(id, null, null, ct);
+            art.DeleteCustomPoster(item!.PosterCustom);
+            return await DetailResultAsync(id, context, store, scanner, ct);
+        }).RequireAuthorization("AdminOnly");
+
+        // "Find missing posters now": every movie and show without a poster of any kind goes back
+        // through TMDB straight away instead of at the next scan (or, unmatched, a week later).
+        enabled.MapPost("/artwork/refresh-missing", async (IMediaStore store, MediaScanner scanner, TmdbClient tmdb, CancellationToken ct) =>
+        {
+            if (await tmdb.ApiKeyAsync(ct) is null) return Results.BadRequest(new { error = new TmdbNotConfiguredException().Message });
+            var queued = await store.QueueTitlesWithoutPostersAsync(ct);
+            if (queued > 0) scanner.RequestMetadataPass();
+            return Results.Ok(new { queued });
+        }).RequireAuthorization("AdminOnly");
+    }
+
+    private const int MaxPosterChoices = 60;
+
+    private static async Task<(MediaItem? Item, IResult? Problem)> PosterTitleAsync(Guid id, IMediaStore store, CancellationToken ct)
+    {
+        var item = await store.GetItemAsync(id, ct);
+        if (item is null) return (null, Results.NotFound(new { error = "That title is not in the library any more." }));
+        if (item.Kind == MediaKinds.Episode) return (null, Results.BadRequest(new { error = "Change the show's poster instead; its episodes use it." }));
+        return (item, null);
+    }
+
+    private static async Task<(IReadOnlyList<TmdbClient.Poster>? Posters, IResult? Error)> TmdbPostersAsync(MediaItem item, TmdbClient tmdb, CancellationToken ct)
+    {
+        if (item.TmdbId is not { } tmdbId)
+            return (null, Results.BadRequest(new { error = "This title isn't matched on TMDB, so there are no posters to choose from. Fix the match first, or upload an image." }));
+        try
+        {
+            var posters = await tmdb.GetPostersAsync(item.Kind, tmdbId, ct);
+            return posters is null
+                ? (null, Results.BadRequest(new { error = "TMDB has no images for this title." }))
+                : (posters, null);
+        }
+        catch (InvalidOperationException ex) when (ex is TmdbNotConfiguredException or TmdbRejectedKeyException)
+        {
+            return (null, Results.BadRequest(new { error = ex.Message }));
+        }
+        catch (HttpRequestException ex)
+        {
+            return (null, Results.Json(new { error = "TMDB did not answer: " + ex.Message }, statusCode: StatusCodes.Status502BadGateway));
+        }
+    }
+
+    private static async Task<IResult> DetailResultAsync(Guid id, HttpContext context, IMediaStore store, MediaScanner scanner, CancellationToken ct)
+    {
+        var view = await MediaView.LoadAsync(store, UserKey(context), ct);
+        return view.Find(id) is { } fresh
+            ? Results.Ok(view.Detail(fresh, IsAdmin(context), scanner.SeasonPoster))
+            : Results.NotFound(new { error = "That title is not in the library any more." });
     }
 
     private static async Task<IResult> RefetchAsync(
         MediaItem item, int? tmdbId, HttpContext context, IMediaStore store, MediaScanner scanner, CancellationToken ct, Guid? answerFor = null)
     {
+        var matchedBefore = item.TmdbId;
         try
         {
+            // A poster picked from the old match's images belongs to a different title now. (A
+            // refresh that keeps the match keeps the pick; an upload is the admin's and stays.)
+            // Forgotten before the fetch when the new match is known, so its artwork warms up.
+            if (item.PosterChosen is not null && tmdbId is not null && tmdbId != matchedBefore)
+            {
+                await store.SetPosterOverrideAsync(item.Id, item.PosterCustom, null, ct);
+                item.PosterChosen = null;
+            }
             await scanner.FetchMetadataAsync(item, tmdbId, null, ct);
+            if (item.PosterChosen is not null && item.TmdbId != matchedBefore)
+                await store.SetPosterOverrideAsync(item.Id, item.PosterCustom, null, ct);
         }
         catch (InvalidOperationException ex) when (ex is TmdbNotConfiguredException or TmdbRejectedKeyException)
         {
@@ -1259,9 +1433,11 @@ public static class MediaEndpoints
 
         public static string? ArtUrl(MediaItem item, string kind)
         {
+            // The version is a hash of whatever the picture comes from, so it changes whenever
+            // the picture does (an upload's path is named after its content).
             var source = kind switch
             {
-                "poster" => item.PosterLocal ?? item.PosterRemote,
+                "poster" => item.PosterCustom ?? item.PosterChosen ?? item.PosterLocal ?? item.PosterRemote,
                 "backdrop" => item.BackdropLocal ?? item.BackdropRemote,
                 "thumb" => item.ThumbLocal ?? item.ThumbRemote,
                 _ => null
@@ -1347,6 +1523,9 @@ public static class MediaEndpoints
                     ? $"https://www.themoviedb.org/{(item.Kind == MediaKinds.Movie ? "movie" : "tv")}/{tmdb}"
                     : null,
                 metadataLocked = item.MetadataLocked,
+                // Where the poster comes from: custom (uploaded), chosen (picked from TMDB's list),
+                // local (a file beside the video), tmdb (TMDB's default) or none.
+                posterSource = item.PosterSource,
                 // DELETE /api/media/items/{id} would be allowed (admins, movies on the server's own disks).
                 canDelete = isAdmin && item.Kind == MediaKinds.Movie && !MediaNetworkPath.IsNetwork(item.Path),
                 metadataError = isAdmin ? item.MetadataError : null,

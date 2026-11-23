@@ -5,8 +5,9 @@ namespace ReelHouse;
 
 public sealed record MediaScanProgress(string Phase, string? LibraryName, int Processed, int Total, DateTimeOffset StartedAt);
 
-// Where downloaded artwork lives: <data>/media-art/<itemId>-poster.jpg and friends. Local artwork
-// beside the video is never copied here; it is served from where it is.
+// Where downloaded artwork lives: <data>/media-art/<itemId>-poster-<hash>.jpg and friends, and
+// posters an admin uploaded under <data>/media-art/custom/. Local artwork beside the video is
+// never copied here; it is served from where it is.
 public sealed class MediaArtCache(string root, string subtitlesRoot)
 {
     public string Root { get; } = root;
@@ -14,9 +15,50 @@ public sealed class MediaArtCache(string root, string subtitlesRoot)
     // Extracted WebVTT subtitles, one file per track - see MediaSubtitles.
     public string SubtitlesRoot { get; } = subtitlesRoot;
 
+    public string CustomRoot => Path.Combine(Root, "custom");
+
     public string PathFor(Guid itemId, string kind) => Path.Combine(Root, $"{itemId:N}-{kind}.jpg");
 
+    // A TMDB image's copy is named after its TMDB path as well as the item, so a new match (or a
+    // poster picked from the list) is a new file. With the item alone in the name, "Fix match"
+    // changed the poster path and the old film's downloaded poster went on being served.
+    public string PathFor(Guid itemId, string kind, string remotePath) =>
+        Path.Combine(Root, $"{itemId:N}-{kind}-{ShortHash(remotePath)}.jpg");
+
     public string SeasonPosterPath(Guid showId, int season) => PathFor(showId, $"season{season}");
+
+    // Named after the picture itself, so every upload is a new path (and a new ?v= on its URL).
+    public string CustomPosterPath(Guid itemId, byte[] jpeg) =>
+        Path.Combine(CustomRoot, $"{itemId:N}-{Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(jpeg).AsSpan(0, 6)).ToLowerInvariant()}.jpg");
+
+    public bool IsCustomPoster(string? path) =>
+        path is not null && Path.GetFullPath(path).StartsWith(Path.GetFullPath(CustomRoot) + Path.DirectorySeparatorChar, StringComparison.Ordinal);
+
+    public void DeleteCustomPoster(string? path)
+    {
+        if (!IsCustomPoster(path)) return;
+        try { File.Delete(path!); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+    }
+
+    // The copies of an item's poster (or backdrop, or thumb) other than `keep`: what an earlier
+    // match downloaded, and the copy from before names carried the TMDB path.
+    public void DeleteOtherCopies(Guid itemId, string kind, string keep)
+    {
+        try
+        {
+            if (!Directory.Exists(Root)) return;
+            var legacy = PathFor(itemId, kind);
+            foreach (var file in Directory.EnumerateFiles(Root, $"{itemId:N}-{kind}-*.jpg").Append(legacy))
+            {
+                if (string.Equals(file, keep, StringComparison.Ordinal) || !File.Exists(file)) continue;
+                try { File.Delete(file); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+    }
+
+    private static string ShortHash(string text) =>
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text)).AsSpan(0, 4)).ToLowerInvariant();
 }
 
 // Turns folders of video files into the catalog, in three passes that each get the shelf a
@@ -123,6 +165,45 @@ public sealed partial class MediaScanner : IDisposable
     }
 
     private int _pendingRescan;
+
+    // Just the TMDB pass, now, for titles sent back to it (POST /api/media/artwork/refresh-missing):
+    // no walk of the folders first, which on a network share can take a while. If a scan is
+    // running, a full one follows it, since it may already be past its own metadata pass.
+    public void RequestMetadataPass()
+    {
+        if (TryStartMetadataPass()) return;
+        Interlocked.Exchange(ref _pendingRescan, 1);
+        if (TryStartScan(null)) Interlocked.Exchange(ref _pendingRescan, 0);
+    }
+
+    private bool TryStartMetadataPass()
+    {
+        if (!_scanLock.Wait(0)) return false;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var startedAt = DateTimeOffset.UtcNow;
+                LastError = null;
+                try
+                {
+                    Progress = new MediaScanProgress("metadata", null, 0, 0, startedAt);
+                    await MetadataPassAsync(startedAt, _shutdown.Token);
+                }
+                catch (OperationCanceledException) when (_shutdown.IsCancellationRequested) { }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Media metadata pass failed");
+                    LastError = ex.Message;
+                }
+                finally { Progress = null; }
+                while (Interlocked.Exchange(ref _pendingRescan, 0) == 1 && !_shutdown.IsCancellationRequested)
+                    await RunLockedAsync(null, _shutdown.Token);
+            }
+            finally { _scanLock.Release(); }
+        });
+        return true;
+    }
 
     // Runs a scan to completion on the caller's thread - what tests and "scan this new library"
     // want. False when a scan was already running.
@@ -685,7 +766,8 @@ public sealed partial class MediaScanner : IDisposable
 
     // The file to serve for an item's poster, backdrop or thumb: the local file beside the
     // video if there is one, else the TMDB image from the cache (downloaded now if it is not
-    // there yet), else null.
+    // there yet), else null. A poster first tries the admin's upload, then the TMDB poster they
+    // picked (MediaItem.PosterSource) - each falls through to the next when it can't be had.
     public async Task<string?> ResolveArtworkAsync(MediaItem item, string kind, CancellationToken cancellationToken)
     {
         var (local, remote, size) = kind switch
@@ -695,12 +777,24 @@ public sealed partial class MediaScanner : IDisposable
             "thumb" => (item.ThumbLocal, item.ThumbRemote, "w500"),
             _ => (null, null, "w500")
         };
+        if (kind == "poster")
+        {
+            if (item.PosterCustom is { } custom && File.Exists(custom)) return custom;
+            if (item.PosterChosen is { } chosen && await CachedRemoteAsync(item, kind, chosen, size, cancellationToken) is { } picked) return picked;
+        }
         if (local is not null && _files.FileExists(local)) return local;
         if (remote is null) return null;
-        var cached = _art.PathFor(item.Id, kind);
+        return await CachedRemoteAsync(item, kind, remote, size, cancellationToken);
+    }
+
+    private async Task<string?> CachedRemoteAsync(MediaItem item, string kind, string remote, string size, CancellationToken cancellationToken)
+    {
+        var cached = _art.PathFor(item.Id, kind, remote);
         if (File.Exists(cached)) return cached;
-        if (await _tmdb.ApiKeyAsync(cancellationToken) is null && !File.Exists(cached)) return null;
-        return await _tmdb.DownloadImageAsync(remote, size, cached, cancellationToken) ? cached : null;
+        if (await _tmdb.ApiKeyAsync(cancellationToken) is null) return null;
+        if (!await _tmdb.DownloadImageAsync(remote, size, cached, cancellationToken)) return null;
+        _art.DeleteOtherCopies(item.Id, kind, cached);
+        return cached;
     }
 
     public string? SeasonPoster(Guid showId, int season)
