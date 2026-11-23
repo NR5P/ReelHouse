@@ -33,9 +33,7 @@ public sealed class SizedArtCache(string root)
         var bucket = Bucket(size);
         var entry = fs.Stat(original);
         if (entry is null) return original;
-        var stamp = $"{original}|{entry.Length}|{entry.ModifiedUtc.Ticks}";
-        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(stamp)).AsSpan(0, 10)).ToLowerInvariant();
-        var sized = Path.Combine(Root, $"{hash}-{bucket}.jpg");
+        var sized = Path.Combine(Root, $"{Stamp(original, entry)}-{bucket}.jpg");
         if (File.Exists(sized)) return sized;
         try
         {
@@ -64,6 +62,24 @@ public sealed class SizedArtCache(string root)
         {
             return original;
         }
+    }
+
+    // Every copy is named after the original's path, length and modification time, so a replaced
+    // picture never gets an old copy.
+    private static string Stamp(string original, MediaFsEntry entry)
+    {
+        var stamp = $"{original}|{entry.Length}|{entry.ModifiedUtc.Ticks}";
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(stamp)).AsSpan(0, 10)).ToLowerInvariant();
+    }
+
+    // Deletes the copies made from `original` as it is now, before it is replaced or removed. A
+    // replaced picture gets new copies anyway; this only keeps the old ones from piling up.
+    public void Forget(string original, IMediaFileSystem fs)
+    {
+        var entry = fs.Stat(original);
+        if (entry is null || !Directory.Exists(Root)) return;
+        foreach (var copy in Directory.EnumerateFiles(Root, $"{Stamp(original, entry)}-*.jpg"))
+            try { File.Delete(copy); } catch (IOException) { } catch (UnauthorizedAccessException) { }
     }
 
     // Baseline JPEG, PNG and GIF: what every ReelHouse client, Roku included, can draw.

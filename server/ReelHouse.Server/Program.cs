@@ -201,6 +201,21 @@ builder.Services.AddHttpClient(MusicLyricsService.HttpClientName, client =>
     client.DefaultRequestHeaders.UserAgent.ParseAdd("ReelHouse-Music/1.0 (self-hosted home media server)");
 });
 builder.Services.AddSingleton<MusicCoverArtClient>();
+// The second online cover source, after the Cover Art Archive (MusicArt.cs).
+builder.Services.AddHttpClient(MusicITunesArtClient.HttpClientName, client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(20);
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("ReelHouse-Music/1.0 (self-hosted home media server)");
+});
+builder.Services.AddSingleton<MusicITunesArtClient>();
+// Cover downloads follow redirects by hand, so every hop is checked against MusicArtHosts.
+builder.Services.AddHttpClient(MusicArtDownloader.HttpClientName, client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("ReelHouse-Music/1.0 (self-hosted home media server)");
+}).ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false });
+builder.Services.AddSingleton<MusicArtDownloader>();
+builder.Services.AddSingleton<MusicCoverService>();
 builder.Services.AddSingleton<MusicLyricsService>();
 builder.Services.AddSingleton<MusicCatalogCache>();
 builder.Services.AddSingleton<MusicScanner>();

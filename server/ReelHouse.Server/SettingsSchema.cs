@@ -326,7 +326,7 @@ public static class SettingsSchema
             [
                 Check("enabled", "Enabled", "Show the Music tab on the web and in the apps. Turning it off hides it everywhere but keeps the libraries, playlists and everyone's listening history."),
                 Number("rescanHours", "Rescan Every (hours)", "How often the music folders are checked for new, changed or deleted files. The server also checks at startup and whenever a library is added. 0 turns the periodic check off; Scan under Music -> Libraries still works.", 0, 168),
-                Check("fetchArtworkOnline", "Find Missing Album Covers", "For albums with no cover in their files or folder, look the album up on MusicBrainz and fetch its cover from the Cover Art Archive. Only the artist and album names leave this server."),
+                Check("fetchArtworkOnline", "Find Missing Album Covers", "For albums with no cover in their files or folder, look the album up on MusicBrainz and fetch its cover from the Cover Art Archive, or, when the archive has none, from Apple's iTunes search. Only the artist and album names leave this server, sent to MusicBrainz and Apple."),
                 Check("fetchLyricsOnline", "Find Missing Lyrics", "For tracks with no lyrics of their own, look them up on LRCLIB the first time someone opens the lyrics. Only the artist, title, album and length leave this server."),
                 Number("transcodeBitrate", "Converted Quality (kbps)", "The AAC bitrate used when a file has to be converted for a device that cannot play it as it is (a FLAC on an older TV, say), and for data saver when a device does not say. 256 is indistinguishable from the original for nearly everyone; lower saves mobile data.", 96, 320)
             ],

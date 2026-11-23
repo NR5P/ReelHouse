@@ -30,6 +30,7 @@ window.ReelHouseAudioExtras = (function () {
         case "edit": if (lib) openLibraryEditor(container, lib); break;
         case "scan": startScan(container, id); break;
         case "scan-all": startScan(container, null); break;
+        case "find-covers": findMissingCovers(container, b); break;
         case "remove": if (lib) removeLibrary(container, lib); break;
         default: break;
       }
@@ -88,6 +89,7 @@ window.ReelHouseAudioExtras = (function () {
       <div class="mv-actions au-libs-actions">
         <button type="button" class="mv-btn mv-btn-primary" data-lib="add">${ICON.plus}<span>Add a music folder</span></button>
         ${libs.length ? `<button type="button" class="mv-btn mv-btn-glass" data-lib="scan-all">${ICON.refresh}<span>Scan all</span></button>` : ""}
+        ${libs.length ? `<button type="button" class="mv-btn mv-btn-glass" data-lib="find-covers" title="Look again now for every album that has no cover, instead of waiting for the monthly retry">${ICON.search}<span>Find missing covers now</span></button>` : ""}
       </div>`;
   }
 
@@ -132,6 +134,21 @@ window.ReelHouseAudioExtras = (function () {
     if (res.status === 409) { showToast("A scan is already running", false); return; }
     if (!res.ok) { showToast(res.error, false); return; }
     showToast("Scan started", true);
+    setTimeout(() => loadLibraries(container), 400);
+  }
+
+  // Every album with no cover is looked for again now (folder, files, then online if allowed).
+  async function findMissingCovers(container, button) {
+    button.disabled = true;
+    const res = await request("/api/music/artwork/refresh-missing", { method: "POST" });
+    button.disabled = false;
+    if (!res.ok) { showToast(res.error, false); return; }
+    const d = res.data || {};
+    if (!d.queued) { showToast("Every album already has a cover", true); return; }
+    const what = plural(d.queued, "album");
+    showToast(d.started
+      ? `Looking for covers for ${what}${d.online ? "" : " (in the files and folders only: online lookups are off)"}`
+      : `A scan is running - covers for ${what} will be looked for when it finishes`, true);
     setTimeout(() => loadLibraries(container), 400);
   }
 

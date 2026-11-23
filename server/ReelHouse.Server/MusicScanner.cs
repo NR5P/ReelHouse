@@ -3,8 +3,9 @@ namespace ReelHouse;
 // Turns folders of audio files into the catalog, in passes that each make the shelf a little
 // better: the file walk (seconds), the tags (TagLib, ffprobe for the odd file), the album rules
 // that need the whole library at once (who an album belongs to, compilations), and artwork
-// (embedded, then folder, then the Cover Art Archive). Only one scan runs at a time; asking for
-// one while one is running is refused, not queued - except RequestScan, which queues one more.
+// (embedded, then folder, then the Cover Art Archive, then Apple's iTunes search; a cover an
+// admin set by hand is never touched). Only one scan runs at a time; asking for one while one is
+// running is refused, not queued - except RequestScan, which queues one more.
 public sealed class MusicScanner : IDisposable
 {
     public const long MinimumFileBytes = 16 * 1024;
@@ -17,19 +18,21 @@ public sealed class MusicScanner : IDisposable
     private readonly MediaFiles _files;
     private readonly MusicArtCache _art;
     private readonly MusicCoverArtClient _coverArt;
+    private readonly MusicITunesArtClient _itunes;
     private readonly AppSettingsFile _settings;
     private readonly ILogger<MusicScanner> _logger;
     private readonly SemaphoreSlim _scanLock = new(1, 1);
     private readonly CancellationTokenSource _shutdown = new();
     private int _pendingRescan;
 
-    public MusicScanner(IMusicStore store, MediaFiles files, MusicArtCache art, MusicCoverArtClient coverArt, AppSettingsFile settings,
-        IConfiguration configuration, ILogger<MusicScanner> logger)
+    public MusicScanner(IMusicStore store, MediaFiles files, MusicArtCache art, MusicCoverArtClient coverArt, MusicITunesArtClient itunes,
+        AppSettingsFile settings, IConfiguration configuration, ILogger<MusicScanner> logger)
     {
         _store = store;
         _files = files;
         _art = art;
         _coverArt = coverArt;
+        _itunes = itunes;
         _settings = settings;
         _logger = logger;
         FfmpegPath = configuration["FfmpegPath"] ?? "ffmpeg";
@@ -84,6 +87,87 @@ public sealed class MusicScanner : IDisposable
         try { await RunLockedAsync(libraryId, cancellationToken); return true; }
         finally { _scanLock.Release(); }
     }
+
+    // Starts only the artwork pass, in the background - what "find missing covers now" wants
+    // after QueueMissingArtAsync. When a scan is already running (its artwork pass may have
+    // started), a whole scan is queued after it instead. True when the pass started now.
+    public bool RequestArtworkPass()
+    {
+        if (!_scanLock.Wait(0))
+        {
+            RequestScan(null);
+            return false;
+        }
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await RunArtworkLockedAsync(_shutdown.Token);
+                while (Interlocked.Exchange(ref _pendingRescan, 0) == 1 && !_shutdown.IsCancellationRequested)
+                    await RunLockedAsync(null, _shutdown.Token);
+            }
+            finally { _scanLock.Release(); }
+        });
+        return true;
+    }
+
+    // The artwork pass alone, to completion on the caller's thread - for tests. False when a
+    // scan was already running.
+    public async Task<bool> RunArtworkPassAsync(CancellationToken cancellationToken)
+    {
+        if (!await _scanLock.WaitAsync(0, cancellationToken)) return false;
+        try { await RunArtworkLockedAsync(cancellationToken); return true; }
+        finally { _scanLock.Release(); }
+    }
+
+    private async Task RunArtworkLockedAsync(CancellationToken cancellationToken)
+    {
+        LastError = null;
+        try { await ArtworkPassAsync([], DateTimeOffset.UtcNow, cancellationToken); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Music artwork pass failed");
+            LastError = ex.Message;
+        }
+        finally { Progress = null; }
+    }
+
+    // Makes every album with no cover (none found, or never looked for) due for the next artwork
+    // pass now, rather than 30 days after it was last looked for. Albums with a cover, and covers
+    // an admin set, are left alone. Returns how many albums have no cover.
+    public async Task<int> QueueMissingArtAsync(CancellationToken cancellationToken)
+    {
+        var tracks = await _store.GetTracksAsync(null, includeMissing: false, cancellationToken);
+        var known = await _store.GetArtAsync(cancellationToken);
+        var coverless = tracks.Select(t => t.AlbumId).Where(id => id != Guid.Empty).Distinct()
+            .Where(id => known.GetValueOrDefault(MusicArtCache.AlbumKey(id)) is not { } art
+                         || (art.Path is null && !MusicArtSources.IsPinned(art.Source)))
+            .ToList();
+        // Forgetting the "none" record is what makes it due: an album with no record is looked at.
+        var reset = coverless.Select(MusicArtCache.AlbumKey).Where(known.ContainsKey).ToList();
+        if (reset.Count > 0) await _store.DeleteArtAsync(reset, includePinned: false, cancellationToken);
+        return coverless.Count;
+    }
+
+    // Looks one album's cover up again now, as a scan would (after "reset to automatic"), and
+    // saves what it found. Null when an online lookup failed and nothing was saved: the next
+    // scan tries again.
+    public async Task<MusicArtRecord?> LookUpAlbumArtAsync(Guid albumId, IReadOnlyList<MusicTrack> tracks, CancellationToken cancellationToken)
+    {
+        var options = await _settings.GetSectionAsync<MusicSettingsDto>(MusicSettingsDto.SectionName, cancellationToken) ?? new();
+        IReadOnlyList<MediaFsEntry> List(string directory)
+        {
+            try { return _files.For(directory).List(directory); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return []; }
+        }
+        var record = await FindAlbumArtAsync(albumId, OrderForArt(tracks), List, options.FetchArtworkOnline, cancellationToken);
+        if (record is not null) await _store.SetArtAsync(record, cancellationToken);
+        return record;
+    }
+
+    private static List<MusicTrack> OrderForArt(IEnumerable<MusicTrack> tracks) =>
+        tracks.OrderBy(t => t.DiscNumber ?? 1).ThenBy(t => t.TrackNumber ?? int.MaxValue).ThenBy(t => t.RelativePath, StringComparer.OrdinalIgnoreCase).ToList();
 
     private async Task RunLockedAsync(Guid? libraryId, CancellationToken cancellationToken)
     {
@@ -275,11 +359,12 @@ public sealed class MusicScanner : IDisposable
         var albums = tracks.GroupBy(t => t.AlbumId).ToList();
 
         // Albums whose tracks changed are looked at afresh: a new cover.jpg or a re-tagged file
-        // should win over what was found before.
+        // should win over what was found before. Not a cover an admin set by hand, though: the
+        // store keeps those (custom, chosen) and no scan looks at them again.
         var stale = changedAlbums.Select(MusicArtCache.AlbumKey)
             .Concat(tracks.Where(t => changedAlbums.Contains(t.AlbumId)).Select(t => MusicArtCache.ArtistKey(MusicIds.Artist(t.AlbumArtist))))
             .Distinct().ToList();
-        if (stale.Count > 0) await _store.DeleteArtAsync(stale, cancellationToken);
+        if (stale.Count > 0) await _store.DeleteArtAsync(stale, includePinned: false, cancellationToken);
         var known = await _store.GetArtAsync(cancellationToken);
 
         var listings = new Dictionary<string, IReadOnlyList<MediaFsEntry>>(StringComparer.Ordinal);
@@ -292,17 +377,16 @@ public sealed class MusicScanner : IDisposable
         }
 
         var todo = albums.Where(g => known.GetValueOrDefault(MusicArtCache.AlbumKey(g.Key)) is not { } art
-            || (art.Path is null && art.CheckedAt < DateTimeOffset.UtcNow - RecheckMissingArtAfter)).ToList();
+            || (art.Path is null && !MusicArtSources.IsPinned(art.Source) && art.CheckedAt < DateTimeOffset.UtcNow - RecheckMissingArtAfter)).ToList();
         var processed = 0;
         var onlineFailures = 0;
         foreach (var album in todo)
         {
             cancellationToken.ThrowIfCancellationRequested();
             Progress = new MediaScanProgress("artwork", null, processed++, todo.Count, startedAt);
-            var ordered = album.OrderBy(t => t.DiscNumber ?? 1).ThenBy(t => t.TrackNumber ?? int.MaxValue).ThenBy(t => t.RelativePath, StringComparer.OrdinalIgnoreCase).ToList();
-            var record = await FindAlbumArtAsync(album.Key, ordered, List, options.FetchArtworkOnline && onlineFailures < 3, cancellationToken);
+            var record = await FindAlbumArtAsync(album.Key, OrderForArt(album), List, options.FetchArtworkOnline && onlineFailures < 3, cancellationToken);
             if (record is null) { onlineFailures++; continue; }
-            if (record.Source == "caa") onlineFailures = 0;
+            if (record.Source is MusicArtSources.CoverArtArchive or MusicArtSources.ITunes) onlineFailures = 0;
             await _store.SetArtAsync(record, cancellationToken);
         }
 
@@ -366,11 +450,21 @@ public sealed class MusicScanner : IDisposable
                 return new MusicArtRecord(key, parentImage, "folder", DateTimeOffset.UtcNow);
         }
 
-        if (!online || ordered.Count == 0) return new MusicArtRecord(key, null, "none", DateTimeOffset.UtcNow);
+        if (!online || ordered.Count == 0) return new MusicArtRecord(key, null, MusicArtSources.None, DateTimeOffset.UtcNow);
+        return await FindOnlineArtAsync(albumId, ordered, cancellationToken);
+    }
+
+    // The online providers, in order: the Cover Art Archive (by the release id in the tags, the
+    // release group id in the tags, or a MusicBrainz search), then Apple's iTunes search when the
+    // archive has nothing or MusicBrainz knows no such album. Network trouble with either is
+    // "try again later" (null, nothing recorded), never "none".
+    private async Task<MusicArtRecord?> FindOnlineArtAsync(Guid albumId, List<MusicTrack> ordered, CancellationToken cancellationToken)
+    {
+        var key = MusicArtCache.AlbumKey(albumId);
         var first = ordered[0];
+        var destination = _art.AlbumPath(albumId, ".jpg");
         try
         {
-            var destination = _art.AlbumPath(albumId, ".jpg");
             var fetched = false;
             if (ordered.Select(t => t.MusicBrainzReleaseId).FirstOrDefault(id => id is not null) is { } release)
                 fetched = await _coverArt.DownloadFrontAsync("release", release, destination, cancellationToken);
@@ -379,11 +473,28 @@ public sealed class MusicScanner : IDisposable
                 group = await _coverArt.FindReleaseGroupAsync(first.AlbumArtist, first.Album, cancellationToken);
             if (!fetched && group is not null)
                 fetched = await _coverArt.DownloadFrontAsync("release-group", group, destination, cancellationToken);
-            return new MusicArtRecord(key, fetched ? destination : null, fetched ? "caa" : "none", DateTimeOffset.UtcNow);
+            if (fetched) return new MusicArtRecord(key, destination, MusicArtSources.CoverArtArchive, DateTimeOffset.UtcNow);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException && !cancellationToken.IsCancellationRequested)
         {
             _logger.LogInformation("Cover Art Archive lookup for {Album} failed: {Message}", first.Album, ex.Message);
+            return null;
+        }
+
+        if (first.Album == MusicText.UnknownAlbum) return new MusicArtRecord(key, null, MusicArtSources.None, DateTimeOffset.UtcNow);
+        try
+        {
+            var fetched = await _itunes.FindCoverAsync(first.AlbumArtist, first.Album, destination, cancellationToken);
+            return new MusicArtRecord(key, fetched ? destination : null, fetched ? MusicArtSources.ITunes : MusicArtSources.None, DateTimeOffset.UtcNow);
+        }
+        catch (MusicCoverException ex)
+        {
+            _logger.LogInformation("iTunes cover for {Album} could not be used: {Message}", first.Album, ex.Message);
+            return new MusicArtRecord(key, null, MusicArtSources.None, DateTimeOffset.UtcNow);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException && !cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogInformation("iTunes lookup for {Album} failed: {Message}", first.Album, ex.Message);
             return null;
         }
     }

@@ -184,6 +184,12 @@ public sealed class MusicSettingsDto
     public int TranscodeBitrate { get; set; } = 256;
 }
 
+// PUT /api/music/albums/{id}/cover: one of the ids GET .../covers offered.
+public sealed class MusicCoverChoice
+{
+    public string? CandidateId { get; set; }
+}
+
 public sealed class MusicLibraryInput
 {
     public string Name { get; set; } = string.Empty;

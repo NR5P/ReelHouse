@@ -65,8 +65,12 @@ public interface IMusicStore
     Task<int> RestorePinsAsync(IEnumerable<MusicPin> rows, CancellationToken cancellationToken);
 
     Task<IReadOnlyDictionary<string, MusicArtRecord>> GetArtAsync(CancellationToken cancellationToken);
+    // An automatic record (embedded, folder, caa, itunes, none) never replaces a pinned one
+    // (custom, chosen) - a scan that found something while an admin set a cover loses. A pinned
+    // record replaces anything.
     Task SetArtAsync(MusicArtRecord art, CancellationToken cancellationToken);
-    Task DeleteArtAsync(IEnumerable<string> keys, CancellationToken cancellationToken);
+    // Pinned records are kept unless includePinned (what "reset to automatic" wants).
+    Task DeleteArtAsync(IEnumerable<string> keys, bool includePinned, CancellationToken cancellationToken);
 
     Task<MusicLyricsRecord?> GetLyricsAsync(Guid trackId, CancellationToken cancellationToken);
     Task SetLyricsAsync(MusicLyricsRecord lyrics, CancellationToken cancellationToken);
@@ -882,7 +886,11 @@ public sealed class SqliteMusicStore : IMusicStore, IDisposable
         try
         {
             using var command = _connection.CreateCommand();
-            command.CommandText = "INSERT OR REPLACE INTO MusicArt (Key, Path, Source, CheckedAt) VALUES ($key, $path, $source, $at)";
+            command.CommandText = """
+                INSERT INTO MusicArt (Key, Path, Source, CheckedAt) VALUES ($key, $path, $source, $at)
+                ON CONFLICT(Key) DO UPDATE SET Path = excluded.Path, Source = excluded.Source, CheckedAt = excluded.CheckedAt
+                WHERE MusicArt.Source NOT IN ('custom', 'chosen') OR excluded.Source IN ('custom', 'chosen')
+                """;
             command.Parameters.AddWithValue("$key", art.Key);
             command.Parameters.AddWithValue("$path", (object?)art.Path ?? DBNull.Value);
             command.Parameters.AddWithValue("$source", art.Source);
@@ -893,7 +901,7 @@ public sealed class SqliteMusicStore : IMusicStore, IDisposable
         finally { _lock.Release(); }
     }
 
-    public async Task DeleteArtAsync(IEnumerable<string> keys, CancellationToken cancellationToken)
+    public async Task DeleteArtAsync(IEnumerable<string> keys, bool includePinned, CancellationToken cancellationToken)
     {
         await _lock.WaitAsync(cancellationToken);
         try
@@ -903,7 +911,9 @@ public sealed class SqliteMusicStore : IMusicStore, IDisposable
             {
                 using var command = _connection.CreateCommand();
                 command.Transaction = transaction;
-                command.CommandText = "DELETE FROM MusicArt WHERE Key = $key";
+                command.CommandText = includePinned
+                    ? "DELETE FROM MusicArt WHERE Key = $key"
+                    : "DELETE FROM MusicArt WHERE Key = $key AND Source NOT IN ('custom', 'chosen')";
                 command.Parameters.AddWithValue("$key", key);
                 await command.ExecuteNonQueryAsync(cancellationToken);
             }
