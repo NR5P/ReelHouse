@@ -46,7 +46,9 @@ sub onParams()
     size = rh_shapeSize(m.config.shape)
     m.grid.itemSize = size
     m.grid.numColumns = m.config.columns
-    m.grid.numRows = 3
+    ' Only the rows that fit on the screen: with more, focus moves onto a row below its bottom
+    ' edge and the gold frame is drawn where nobody can see it.
+    m.grid.numRows = rh_rowsThatFit(210, size[1], 24)
     if m.config.sorts.Count() > 0 then m.top.findNode("header").hint = "* Sort   PLAY starts"
     reload()
 end sub

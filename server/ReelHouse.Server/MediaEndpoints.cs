@@ -612,18 +612,19 @@ public static class MediaEndpoints
         }).RequireAuthorization("AdminOnly");
 
         enabled.MapGet("/items/{id:guid}/{art:regex(^(poster|backdrop|thumb)$)}", async (
-            Guid id, string art, HttpContext context, IMediaStore store, MediaScanner scanner, CancellationToken ct) =>
+            Guid id, string art, int? size, HttpContext context, IMediaStore store, MediaScanner scanner, SizedArtCache sizer, CancellationToken ct) =>
         {
             var item = await store.GetItemAsync(id, ct);
             if (item is null) return Results.NotFound();
             string? path;
             try { path = await scanner.ResolveArtworkAsync(item, art, ct); }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested) { path = null; }
-            return ServeImage(context, scanner.Files, path);
+            return await ServeImageAsync(context, scanner.Files, sizer, path, size, ct);
         });
 
-        enabled.MapGet("/items/{id:guid}/seasons/{season:int}/poster", (Guid id, int season, HttpContext context, MediaScanner scanner) =>
-            ServeImage(context, scanner.Files, scanner.SeasonPoster(id, season)));
+        enabled.MapGet("/items/{id:guid}/seasons/{season:int}/poster", (Guid id, int season, int? size, HttpContext context, MediaScanner scanner,
+            SizedArtCache sizer, CancellationToken ct) =>
+            ServeImageAsync(context, scanner.Files, sizer, scanner.SeasonPoster(id, season), size, ct));
     }
 
     private static IOrderedEnumerable<MediaItem> Order<TKey>(IEnumerable<MediaItem> items, Func<MediaItem, TKey> key, bool descending) =>
@@ -631,19 +632,25 @@ public static class MediaEndpoints
             ? items.OrderByDescending(key).ThenBy(i => i.SortTitle, StringComparer.Ordinal)
             : items.OrderBy(key).ThenBy(i => i.SortTitle, StringComparer.Ordinal);
 
-    private static IResult ServeImage(HttpContext context, MediaFiles files, string? path)
+    // ?size= serves a smaller baseline-JPEG copy (SizedArtCache) - what the Roku app asks for.
+    private static async Task<IResult> ServeImageAsync(HttpContext context, MediaFiles files, SizedArtCache sizer, string? path, int? size,
+        CancellationToken ct)
     {
-        if (path is null || !files.FileExists(path)) return Results.NotFound();
-        // The URL carries a version (see MediaView.ArtUrl), so a changed match is a new URL and
-        // this can be cached freely.
-        context.Response.Headers.CacheControl = "private, max-age=86400";
-        var type = Path.GetExtension(path).ToLowerInvariant() switch
+        if (path is null || !await Task.Run(() => files.FileExists(path), ct)) return Results.NotFound();
+        try
         {
-            ".png" => "image/png",
-            ".webp" => "image/webp",
-            _ => "image/jpeg"
-        };
-        try { return files.Serve(path, type, ranges: false); }
+            var serve = size is { } wanted ? await sizer.SizedAsync(path, files.For(path), wanted, ct) : path;
+            // The URL carries a version (see MediaView.ArtUrl), so a changed match is a new URL and
+            // this can be cached freely.
+            context.Response.Headers.CacheControl = "private, max-age=86400";
+            var type = Path.GetExtension(serve).ToLowerInvariant() switch
+            {
+                ".png" => "image/png",
+                ".webp" => "image/webp",
+                _ => "image/jpeg"
+            };
+            return files.Serve(serve, type, ranges: false);
+        }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return Results.NotFound(); }
     }
 
@@ -652,7 +659,7 @@ public static class MediaEndpoints
     private static void MapPlayback(RouteGroupBuilder enabled)
     {
         enabled.MapGet("/items/{id:guid}/playback", async (
-            Guid id, double? start, string? video, string? audio, int? audioTrack, HttpContext context,
+            Guid id, double? start, string? video, string? audio, int? audioTrack, string? segments, HttpContext context,
             IMediaStore store, MediaScanner scanner, MediaHlsManager hls, ILoggerFactory loggers, CancellationToken ct) =>
         {
             var view = await MediaView.LoadAsync(store, UserKey(context), ct);
@@ -678,6 +685,9 @@ public static class MediaEndpoints
                     MediaPlaybackPlanner.ParseCodecs(audio, "aac", "mp3"),
                     audioTrack,
                     item.TimestampsInDecodeOrder ? await scanner.TimestampRebuildCodecsAsync(ct) : null);
+            // ?segments=ts: the client wants HLS in MPEG-TS (the Roku app - see MediaPlaybackPlan).
+            if (!plan.Direct && string.Equals(segments, "ts", StringComparison.OrdinalIgnoreCase))
+                plan = plan with { TransportStream = true };
 
             var (next, nextTitle) = view.NextAfter(item);
             var subtitleOffset = plan.Direct ? 0 : startSeconds;
@@ -791,7 +801,8 @@ public static class MediaEndpoints
             }
 
             var segment = hls.FilePath(found, file);
-            return segment is null ? Results.NotFound() : Results.File(segment, "video/mp4");
+            return segment is null ? Results.NotFound()
+                : Results.File(segment, file.EndsWith(".ts", StringComparison.Ordinal) ? "video/mp2t" : "video/mp4");
         });
 
         enabled.MapGet("/items/{id:guid}/subtitles/{index:int}.vtt", async (

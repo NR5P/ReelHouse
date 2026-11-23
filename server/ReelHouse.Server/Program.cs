@@ -187,6 +187,8 @@ builder.Services.AddHostedService<MullvadAccountWorker>();
 // ---- Music (docs/MUSIC_AND_PODCASTS.md sections 2-4) ----
 builder.Services.AddSingleton<IMusicStore>(new SqliteMusicStore(dataRoot));
 builder.Services.AddSingleton(new MusicArtCache(Path.Combine(dataRoot, "music-art")));
+// Sized (and always baseline-JPEG) copies of film/TV and podcast art for ?size= - see ArtSizing.cs.
+builder.Services.AddSingleton(new SizedArtCache(Path.Combine(dataRoot, "sized-art")));
 builder.Services.AddHttpClient(MusicCoverArtClient.HttpClientName, client =>
 {
     client.Timeout = TimeSpan.FromSeconds(20);

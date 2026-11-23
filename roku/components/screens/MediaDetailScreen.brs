@@ -82,8 +82,8 @@ sub onDetail(resp as object)
     m.meta.text = rh_mediaMetaLine(d)
     m.tagline.text = rh_getStr(d, "tagline")
     m.overview.text = rh_getStr(d, "overview")
-    m.backdrop.uri = rh_absUrl(server, rh_getStr(d, "backdropUrl"))
-    m.poster.uri = rh_absUrl(server, rh_getStr(d, "posterUrl"))
+    m.backdrop.uri = rh_absUrl(server, rh_sizedArt(rh_getStr(d, "backdropUrl"), 1200))
+    m.poster.uri = rh_absUrl(server, rh_sizedArt(rh_getStr(d, "posterUrl"), 600))
 
     names = []
     for each member in rh_getArr(d, "cast")

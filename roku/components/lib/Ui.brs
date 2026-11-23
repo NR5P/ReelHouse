@@ -19,6 +19,14 @@ function rh_colors() as object
 end function
 
 ' [width, height] of one tile of each shape, artwork plus the two lines of text under it.
+'' How many rows of `height`-tall tiles, `spacing` apart, fit between `top` and the bottom of a
+' 1080-line screen (at least one).
+function rh_rowsThatFit(top as integer, height as integer, spacing as integer) as integer
+    rows = Int((1076 - top + spacing) / (height + spacing))
+    if rows < 1 then rows = 1
+    return rows
+end function
+
 function rh_shapeSize(shape as string) as object
     if shape = "poster" then return [230, 420]
     if shape = "wide" then return [420, 310]

@@ -364,10 +364,11 @@ public static class PodcastEndpoints
             return Results.Accepted();
         });
 
-        podcasts.MapGet("/{id:guid}/art", async (Guid id, HttpContext context, IPodcastStore store, PodcastHttp http, PodcastLocations locations, CancellationToken ct) =>
+        podcasts.MapGet("/{id:guid}/art", async (Guid id, int? size, HttpContext context, IPodcastStore store, PodcastHttp http, PodcastLocations locations,
+            SizedArtCache sizer, CancellationToken ct) =>
         {
             var show = await store.GetShowAsync(id, ct);
-            return show is null ? Results.NotFound() : await ServeArtAsync(context, show.ImageUrl, http, locations, ct);
+            return show is null ? Results.NotFound() : await ServeArtAsync(context, show.ImageUrl, size, http, locations, sizer, ct);
         });
 
         podcasts.MapGet("/{id:guid}/episodes", async (Guid id, string? sort, string? filter, string? q, int? season, int? offset, int? limit,
@@ -570,15 +571,16 @@ public static class PodcastEndpoints
             return JsonOrNull(PodcastView.Progress(progress, episode));
         });
 
-        podcasts.MapGet("/episodes/{id:guid}/art", async (Guid id, HttpContext context, IPodcastStore store, PodcastHttp http, PodcastLocations locations, CancellationToken ct) =>
+        podcasts.MapGet("/episodes/{id:guid}/art", async (Guid id, int? size, HttpContext context, IPodcastStore store, PodcastHttp http,
+            PodcastLocations locations, SizedArtCache sizer, CancellationToken ct) =>
         {
             var episode = await store.GetEpisodeAsync(id, ct);
             if (episode is null) return Results.NotFound();
             var show = await store.GetShowAsync(episode.PodcastId, ct);
-            var result = episode.ImageUrl is not null ? await ServeArtAsync(context, episode.ImageUrl, http, locations, ct) : null;
+            var result = episode.ImageUrl is not null ? await ServeArtAsync(context, episode.ImageUrl, size, http, locations, sizer, ct) : null;
             return result is not null && result is not IStatusCodeHttpResult { StatusCode: 404 }
                 ? result
-                : await ServeArtAsync(context, show?.ImageUrl, http, locations, ct);
+                : await ServeArtAsync(context, show?.ImageUrl, size, http, locations, sizer, ct);
         });
 
         podcasts.MapGet("/episodes/{id:guid}/audio", async (Guid id, int? download, HttpContext context, IPodcastStore store, IHttpClientFactory clients, CancellationToken ct) =>
@@ -966,8 +968,10 @@ public static class PodcastEndpoints
     // MARK: - Files
 
     // The show's or episode's art, fetched once into the art cache. The URL carries a version
-    // (PodcastView), so a day's caching is safe.
-    private static async Task<IResult> ServeArtAsync(HttpContext context, string? imageUrl, PodcastHttp http, PodcastLocations locations, CancellationToken ct)
+    // (PodcastView), so a day's caching is safe. ?size= serves a smaller baseline-JPEG copy
+    // (SizedArtCache) - what the Roku app asks for.
+    private static async Task<IResult> ServeArtAsync(HttpContext context, string? imageUrl, int? size, PodcastHttp http, PodcastLocations locations,
+        SizedArtCache sizer, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(imageUrl)) return Results.NotFound();
         var name = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(imageUrl)), 0, 16).ToLowerInvariant();
@@ -981,6 +985,7 @@ public static class PodcastEndpoints
             await File.WriteAllBytesAsync(temporary, bytes, ct);
             File.Move(temporary, path, overwrite: true);
         }
+        if (size is { } wanted) path = await sizer.SizedAsync(path, LocalMediaFileSystem.Instance, wanted, ct);
         var head = new byte[16];
         await using (var file = File.OpenRead(path)) _ = await file.ReadAsync(head, ct);
         context.Response.Headers.CacheControl = "private, max-age=86400";

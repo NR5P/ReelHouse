@@ -14,8 +14,8 @@
         <BrandHeader id="header" />
         <Label id="title" translation="[96,140]" width="1200" color="0xF4E9DAFF" font="font:LargeBoldSystemFont" />
         <Label id="count" translation="[1224,156]" width="600" horizAlign="right" color="0xA99A8EFF" font="font:SmallSystemFont" />
-        <MarkupGrid id="grid" translation="[102,230]" itemComponentName="PosterItem" drawFocusFeedback="false"
-            vertFocusAnimationStyle="floatingFocus" itemSpacing="[28,36]" />
+        <MarkupGrid id="grid" translation="[102,210]" itemComponentName="PosterItem" drawFocusFeedback="false"
+            vertFocusAnimationStyle="floatingFocus" itemSpacing="[28,24]" />
         <Label id="message" translation="[160,480]" width="1600" horizAlign="center" wrap="true" maxLines="4" color="0xA99A8EFF" font="font:MediumSystemFont" />
     </children>
 </component>

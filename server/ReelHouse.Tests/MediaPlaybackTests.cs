@@ -42,6 +42,26 @@ public sealed class MediaPlaybackTests
         Assert.True(mp4.Direct);
     }
 
+    // Roku finds no audio in ffmpeg's muxed fMP4 HLS (any codec), but plays the same streams in
+    // MPEG-TS - Dolby audio included, so it is still copied.
+    [Fact]
+    public void AnMpegTsSession_WritesTsSegments_WithNoInitSegmentOrHvc1Tag()
+    {
+        var item = Item("mkv", "hevc", "eac3");
+        var plan = MediaPlaybackPlanner.Plan(item, AppleVideo, AppleAudio, null) with { TransportStream = true };
+        var args = MediaPlaybackPlanner.BuildFfmpegArguments(item, plan, 0, "/tmp/session");
+        Assert.Equal("mpegts", args[args.IndexOf("-hls_segment_type") + 1]);
+        Assert.Equal(Path.Combine("/tmp/session", "seg_%05d.ts"), args[args.IndexOf("-hls_segment_filename") + 1]);
+        Assert.DoesNotContain("-hls_fmp4_init_filename", args);
+        Assert.DoesNotContain("hvc1", args);
+        Assert.Equal("copy", args[args.IndexOf("-c:a") + 1]);
+        Assert.Equal(Path.Combine("/tmp/session", "index.m3u8"), args[^1]);
+
+        var fmp4 = MediaPlaybackPlanner.BuildFfmpegArguments(item, plan with { TransportStream = false }, 0, "/tmp/session");
+        Assert.Equal("fmp4", fmp4[fmp4.IndexOf("-hls_segment_type") + 1]);
+        Assert.Contains("hvc1", fmp4);
+    }
+
     [Fact]
     public void AnMkv_IsRemuxedNotReencoded()
     {

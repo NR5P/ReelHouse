@@ -11,7 +11,11 @@ namespace ReelHouse;
 // RebuildTimestamps: the file's frame timestamps are in decode order (MediaItem.TimestampsInDecodeOrder).
 // A copied video has them re-derived from the bitstream; a re-encode needs nothing, since ffmpeg
 // stamps decoded frames afresh in the order the decoder shows them (checked on the Rambo file).
-public sealed record MediaPlaybackPlan(bool Direct, string VideoMode, string AudioMode, int? AudioTrackIndex, bool TagHvc1, string Reason, bool RebuildTimestamps = false);
+// TransportStream: HLS in MPEG-TS segments rather than fMP4 - for Roku, which plays the video of
+// ffmpeg's muxed fMP4 sessions but finds no audio in them at all (AAC, AC-3 or E-AC-3 alike;
+// the same audio in MPEG-TS plays). Jellyfin sends Roku MPEG-TS too.
+public sealed record MediaPlaybackPlan(bool Direct, string VideoMode, string AudioMode, int? AudioTrackIndex, bool TagHvc1, string Reason,
+    bool RebuildTimestamps = false, bool TransportStream = false);
 
 public static class MediaPlaybackPlanner
 {
@@ -132,7 +136,7 @@ public static class MediaPlaybackPlanner
         if (plan.VideoMode == "copy")
         {
             args.AddRange(["-c:v", "copy"]);
-            if (plan.TagHvc1) args.AddRange(["-tag:v", "hvc1"]);
+            if (plan.TagHvc1 && !plan.TransportStream) args.AddRange(["-tag:v", "hvc1"]);
             // Re-derives each frame's timestamp from its picture order in the bitstream.
             if (plan.RebuildTimestamps) args.AddRange(["-bsf:v", "dts2pts"]);
         }
@@ -158,12 +162,14 @@ public static class MediaPlaybackPlanner
             "-hls_time", "6",
             "-hls_playlist_type", "event",
             "-hls_list_size", "0",
-            "-hls_segment_type", "fmp4",
-            "-hls_fmp4_init_filename", "init.mp4",
-            "-hls_flags", "temp_file+independent_segments",
-            "-hls_segment_filename", Path.Combine(outputDirectory, "seg_%05d.m4s"),
-            Path.Combine(outputDirectory, "index.m3u8")
+            "-hls_flags", "temp_file+independent_segments"
         ]);
+        if (plan.TransportStream)
+            args.AddRange(["-hls_segment_type", "mpegts", "-hls_segment_filename", Path.Combine(outputDirectory, "seg_%05d.ts")]);
+        else
+            args.AddRange(["-hls_segment_type", "fmp4", "-hls_fmp4_init_filename", "init.mp4",
+                "-hls_segment_filename", Path.Combine(outputDirectory, "seg_%05d.m4s")]);
+        args.Add(Path.Combine(outputDirectory, "index.m3u8"));
         return args;
     }
 }
@@ -230,7 +236,7 @@ public sealed class MediaHlsManager : IDisposable
         MediaItem item, MediaPlaybackPlan plan, double startSeconds, IReadOnlyList<MediaSubtitleTrack> subtitles, CancellationToken cancellationToken,
         string? input = null)
     {
-        var key = $"{item.Id:N}|{plan.VideoMode}|{plan.AudioMode}|{plan.AudioTrackIndex}|{plan.RebuildTimestamps}|{Math.Round(startSeconds)}";
+        var key = $"{item.Id:N}|{plan.VideoMode}|{plan.AudioMode}|{plan.AudioTrackIndex}|{plan.RebuildTimestamps}|{plan.TransportStream}|{Math.Round(startSeconds)}";
         var existing = _sessions.Values.FirstOrDefault(s => s.Key == key && (!s.Finished || File.Exists(s.PlaylistPath)));
         if (existing is not null && (File.Exists(existing.PlaylistPath) || !existing.Finished))
         {

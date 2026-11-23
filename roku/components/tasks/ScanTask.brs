@@ -46,7 +46,7 @@ sub scan()
             xfer.SetMessagePort(port)
             xfer.SetUrl(base + "/api/health")
             xfer.AddHeader("Accept", "application/json")
-            if xfer.AsyncGetToString() then batch[Str(xfer.GetIdentity()).Trim()] = { xfer: xfer, base: base }
+            if xfer.AsyncGetToString() then batch[xfer.GetIdentity().ToStr()] = { xfer: xfer, base: base }
             i = i + 1
             started = started + 1
         end while
@@ -59,7 +59,7 @@ sub scan()
             msg = wait(remaining, port)
             if msg = invalid then exit while
             if type(msg) = "roUrlEvent" then
-                id = Str(msg.GetSourceIdentity()).Trim()
+                id = msg.GetSourceIdentity().ToStr()
                 entry = batch[id]
                 if entry <> invalid then
                     batch.Delete(id)

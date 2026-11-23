@@ -174,6 +174,20 @@ public sealed class SqliteMediaStore : IMediaStore, IDisposable
             INSERT OR IGNORE INTO MediaState (Key, Value) VALUES ('probe.frameOrderChecked', '1');
             """;
         reprobe.ExecuteNonQuery();
+
+        // Rescans used to wipe the TMDB poster/backdrop paths (see UpsertItemsAsync). Once, send
+        // every matched film and show that lost them back through the metadata pass, which keeps
+        // its existing match (MediaScanner.MetadataPassAsync) and refills the episodes' stills.
+        using var reart = _connection.CreateCommand();
+        reart.CommandText = """
+            UPDATE MediaItems SET MetadataFetchedAt = NULL
+            WHERE Kind IN ('movie', 'show') AND TmdbId IS NOT NULL AND MetadataLocked = 0
+              AND json_extract(Artwork, '$.posterRemote') IS NULL
+              AND json_extract(Artwork, '$.backdropRemote') IS NULL
+              AND NOT EXISTS (SELECT 1 FROM MediaState WHERE Key = 'artwork.remoteRestored');
+            INSERT OR IGNORE INTO MediaState (Key, Value) VALUES ('artwork.remoteRestored', '1');
+            """;
+        reart.ExecuteNonQuery();
     }
 
     // MARK: - Libraries
@@ -380,7 +394,9 @@ public sealed class SqliteMediaStore : IMediaStore, IDisposable
                 using var command = _connection.CreateCommand();
                 command.Transaction = transaction;
                 // A rescan rewrites what the files say (title, path, size, season) and leaves what
-                // TMDB and ffprobe said alone - those columns are only in the INSERT half.
+                // TMDB and ffprobe said alone - those columns are only in the INSERT half. Artwork
+                // is both: the local files come from the scan, the TMDB paths are kept. (Replacing
+                // the whole blob used to wipe every TMDB poster on each rescan.)
                 command.CommandText = """
                     INSERT INTO MediaItems (Id, LibraryId, Kind, ParentId, Title, SortTitle, Year, SeasonNumber, EpisodeNumber, Path,
                         FileSize, FileModifiedAt, AddedAt, Missing, MissingSince, TmdbId, Rating, Genres, MetadataFetchedAt, MetadataLocked,
@@ -396,7 +412,10 @@ public sealed class SqliteMediaStore : IMediaStore, IDisposable
                         SeasonNumber = excluded.SeasonNumber, EpisodeNumber = excluded.EpisodeNumber,
                         Path = excluded.Path, FileSize = excluded.FileSize, FileModifiedAt = excluded.FileModifiedAt,
                         Missing = 0, MissingSince = NULL,
-                        Artwork = excluded.Artwork,
+                        Artwork = json_set(excluded.Artwork,
+                            '$.posterRemote', json_extract(Artwork, '$.posterRemote'),
+                            '$.backdropRemote', json_extract(Artwork, '$.backdropRemote'),
+                            '$.thumbRemote', json_extract(Artwork, '$.thumbRemote')),
                         ProbedAt = CASE WHEN FileSize IS excluded.FileSize AND FileModifiedAt IS excluded.FileModifiedAt THEN ProbedAt ELSE NULL END
                     """;
                 command.Parameters.AddWithValue("$id", item.Id.ToString("N"));

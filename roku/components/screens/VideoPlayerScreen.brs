@@ -105,13 +105,13 @@ sub onPlayback(resp as object)
     subtitle = rh_getStr(pb, "subtitle")
     m.overlayTitle.text = title
     m.overlayText.text = rh_join([subtitle, "Starting..."], Chr(10))
-    m.overlayArt.uri = rh_absUrl(server, rh_getStr(pb, "backdropUrl"))
+    m.overlayArt.uri = rh_absUrl(server, rh_sizedArt(rh_getStr(pb, "backdropUrl"), 1200))
 
     content = CreateObject("roSGNode", "ContentNode")
     content.url = rh_absUrl(server, rh_getStr(pb, "url"))
     content.streamFormat = rh_videoStreamFormat(pb)
     content.title = rh_join([title, subtitle], " · ")
-    content.HDPosterUrl = rh_absUrl(server, rh_getStr(pb, "posterUrl"))
+    content.HDPosterUrl = rh_absUrl(server, rh_sizedArt(rh_getStr(pb, "posterUrl"), 400))
     if m.global.cookie <> "" then content.HttpHeaders = ["Cookie: " + m.global.cookie]
     duration = rh_getNum(pb, "durationSeconds", 0)
     start = rh_getNum(pb, "startSeconds", 0)

@@ -185,7 +185,9 @@ Streams and artwork need the cookie too:
 
 - **Video.** `GET /api/media/items/{id}/playback` asks for:
   - `video=h264`, plus `hevc` when `roDeviceInfo.CanDecodeVideo` says the Roku decodes it;
-  - `audio=aac,mp3`, plus `ac3`/`eac3` when `CanDecodeAudio` says it can.
+  - `audio=aac,mp3`, plus `ac3`/`eac3` when `CanDecodeAudio` says it can;
+  - `segments=ts`: when the server has to repackage a file, it sends MPEG-TS rather than fMP4,
+    which Roku plays without sound.
 
   Direct-play MP4s start at `startSeconds` (`PlayStart`). HLS sessions start at their own
   time 0, which is `startSeconds` in the film. Progress is always reported as
@@ -215,59 +217,59 @@ Streams and artwork need the cookie too:
   speed or Sound Check.
 - **Queue and repeat:** no repeat modes (shuffle is a one-time shuffle of the list) and no
   podcast Up Next queue.
-- **Video tracks:** no audio-track or subtitle picker of its own (the server's default audio
-  track is used). Captions come from the Roku's settings.
+- **Video tracks:** no audio-track or subtitle picker of its own. In an HLS session the server's
+  default audio track is used; a directly played MP4 with several audio tracks plays whichever
+  the Roku picks (it prefers a 5.1 track over a stereo default). Captions come from the Roku's
+  settings.
 - **Connection:**
   - no mDNS, and no automatic HTTPS-to-HTTP fallback with certificate pinning. The channel
     simply never uses the self-signed port;
   - no advisory when the server is older than the channel expects.
 - **Grid sorting:** `*` changes the sort order only; there are no genre or unwatched filters.
 
-## What to check on a real Roku
+## Tested on a Roku
 
-None of this can be checked without a device. The likely fix is given for each item.
+First tested on 2026-11-22 on a Hisense 40" Roku TV (model 40H4030, Roku OS 16.0). These worked
+once the fixes below were in:
 
-1. **Artwork shows up.**
-   - Posters fetch from `/api/media/...` and `/api/music/...` routes, which need the session
-     cookie. It is set on the Scene's shared HTTP agent (`MainScene.brs` `applyCookie`), and
-     RowList and MarkupGrid item posters are expected to inherit it.
-   - If tiles stay as text cards on a server with sign-in on, the agent isn't reaching them.
-     Give each `Poster` an agent in `PosterItem`/`ListRowItem` instead.
-2. **HLS plays from the start and can seek.**
-   - The server's HLS playlist is an EVENT playlist. It grows until ffmpeg finishes and has
-     `EXT-X-START:TIME-OFFSET=0`.
-   - The Roku may treat it as live and start near the newest segment. The channel seeks back
-     to 0 if the first position it sees is past 3 s.
-   - Check that seeking works within what has been produced, and that the trick-play bar shows
-     a sensible length (`content.Length` is set from the server's duration).
-3. **fMP4 HLS with HEVC.** The server's segments are fMP4 (`init.mp4` + `.m4s`), and its master
-   playlist has no `CODECS` or `RESOLUTION`. Recent Rokus play fMP4/CMAF HLS. Check H.264 on
-   any Roku, and HEVC on a 4K model. If HEVC sessions fail, drop `hevc` in `source/main.brs`
-   `VideoCodecs`; the server then transcodes to H.264.
-4. **The cookie reaches HLS segments** through `content.HttpHeaders`. A 401 shows up as a
-   playback error shortly after start.
-5. **The keyboard dialogs.**
-   - `StandardKeyboardDialog` needs Roku OS 10 or later; older firmware falls back to the
-     classic `KeyboardDialog`.
-   - Check that the password field masks input (`textEditBox.secureMode`).
-6. **RowList layout.** Check the row heights and label spacing with the mixed tile shapes
-   (poster, 16:9, square), and the gold focus frame.
-7. **The LAN scan.**
-   - Check how long it takes on Wi-Fi.
-   - Check that 32 transfers at once is not too many for low-end models. Lower `batchSize` in
-     `ScanTask.xml` if they struggle.
-8. **The audio formats each model plays.** Check FLAC and ALAC originals, AAC `.m4a`
-   conversions, and podcast MP3s relayed from their publisher.
+- finding the server with the LAN scan, and signing in;
+- Home rows with artwork and the gold focus frame;
+- the detail page, direct play of an MP4 with resume, and progress saved when playback stops;
+- HLS sessions with Dolby Digital Plus audio (The Odyssey, an H.264 + E-AC-3 MKV);
+- a TV show's seasons and episodes, and playing an episode;
+- the Movies grid, scrolling and changing the sort;
+- music (FLAC played as it is, Next, Now Playing) and a podcast (MP3, resume, Back 15s);
+- Settings.
 
-### Server changes
+What testing turned up, and what fixed it:
 
-None were needed for this version. The channel sends the session cookie as an ordinary header.
-It uses HTTP on the LAN, where the server already serves everything. It asks for exactly the
-codecs the Roku reports, and the server already converts the rest (AAC audio inside HLS, AAC
-`.m4a` for music).
+- **The scan found nothing.** `Str()` formats through a float, so `roUrlTransfer` identities came
+  out as `1.226835e+08` and many requests shared one key; every answer was thrown away. Numbers
+  are now formatted with `ToStr()` (`rh_intStr`, `rh_numStr`).
+- **No focus frame on Home.** A RowList sets `gridHasFocus` to false on its items, and
+  `PosterItem` read it there too. It now reads the flag of the container it is in.
+- **Blank posters.** Roku can't draw progressive JPEGs, so the channel asks for every server
+  image with `?size=`, which always comes back as a baseline JPEG. (Most blank tiles turned out
+  to be a server bug that dropped TMDB posters on each rescan, since fixed.)
+- **No sound in HLS sessions.** The Roku played the video of the server's fMP4 sessions but found
+  no audio in them, whatever the codec. The channel now asks for `segments=ts`; the same audio in
+  MPEG-TS plays, Dolby Digital Plus included.
+- **Focus off the bottom of the screen.** Home asked for 3 rows and the grid for 3, but under 2
+  fit, so focus moved onto a row nobody could see. Home now has 2 rows with the focused row held
+  at the top (`fixedFocus`), and the grid shows only the rows that fit (`rh_rowsThatFit`).
+- **Half a focus frame.** A RowList clips what an item draws above or left of itself, so the
+  frame is now a border inside the artwork.
+- **A video wouldn't start after music or a podcast** ("only one playing instance supported"):
+  a paused Audio node still holds the player. Starting a video now stops the audio, which saves
+  the podcast's place first.
+- **Cut-off labels.** The detail page and Now Playing buttons use `SmallBoldSystemFont`, and the
+  WATCHED badge is wider.
 
-If item 1 or 3 above fails on hardware, these server changes would help:
+Still to check:
 
-- **For item 1:** an artwork URL that doesn't need the cookie, such as a signed query
-  parameter.
-- **For item 3:** `CODECS`/`RESOLUTION` on the master playlist's `EXT-X-STREAM-INF`.
+- HEVC sessions on a 4K model. If they fail, drop `hevc` in `source/main.brs` `VideoCodecs`;
+  the server then transcodes to H.264.
+- The keyboard dialogs on Roku OS older than 10 (`KeyboardDialog` fallback).
+- Music: FLAC and ALAC originals, AAC `.m4a` conversions; podcast MP3s relayed from their
+  publisher.
+- How long the LAN scan takes on Wi-Fi and on low-end models (`batchSize` in `ScanTask.xml`).

@@ -175,6 +175,21 @@ public sealed class MediaEndpointsTests : IDisposable
             Assert.Equal("video/mp4", segment.Content.Headers.ContentType?.MediaType);
         }
 
+        // The Roku app asks for MPEG-TS segments: its own session, no init segment, AC-3 kept.
+        var ts = await GetJsonAsync(client, $"/api/media/items/{pilotId}/playback?video=h264&audio=aac,ac3&segments=ts");
+        Assert.Equal("hls", ts.GetProperty("mode").GetString());
+        Assert.NotEqual(hls.GetProperty("url").GetString(), ts.GetProperty("url").GetString());
+        Assert.Equal("copy", ts.GetProperty("audio").GetString());
+        var tsBase = ts.GetProperty("url").GetString()![..(ts.GetProperty("url").GetString()!.LastIndexOf('/') + 1)];
+        var tsIndex = await client.GetStringAsync(tsBase + "index.m3u8", Ct);
+        Assert.DoesNotContain("EXT-X-MAP", tsIndex);
+        var firstTs = tsIndex.Split('\n').First(line => line.EndsWith(".ts", StringComparison.Ordinal));
+        using (var segment = await client.GetAsync(tsBase + firstTs, Ct))
+        {
+            Assert.Equal(HttpStatusCode.OK, segment.StatusCode);
+            Assert.Equal("video/mp2t", segment.Content.Headers.ContentType?.MediaType);
+        }
+
         // The sidecar .srt comes out as WebVTT.
         var subtitle = hls.GetProperty("subtitles")[0];
         Assert.Equal("English", subtitle.GetProperty("label").GetString()!.Split(' ')[0]);

@@ -50,9 +50,21 @@ sub layout()
     w = m.top.width
     h = artHeight()
     if w <= 0 or h <= 0 then return
-    m.frame.translation = [-6, -6]
-    m.frame.width = w + 12
-    m.frame.height = h + 12
+    edge = 6
+    top = m.top.findNode("frameTop")
+    top.width = w
+    top.height = edge
+    bottom = m.top.findNode("frameBottom")
+    bottom.translation = [0, h - edge]
+    bottom.width = w
+    bottom.height = edge
+    left = m.top.findNode("frameLeft")
+    left.width = edge
+    left.height = h
+    right = m.top.findNode("frameRight")
+    right.translation = [w - edge, 0]
+    right.width = edge
+    right.height = h
     m.card.width = w
     m.card.height = h
     m.cardLabel.translation = [12, 0]
@@ -65,7 +77,7 @@ sub layout()
     ' Decode no bigger than drawn: a page of full-size posters is a lot of texture memory.
     m.art.loadWidth = w
     m.art.loadHeight = h
-    m.badge.translation = [w - 124, 8]
+    m.badge.translation = [w - 148, 8]
     m.barTrack.translation = [0, h - 8]
     m.barTrack.width = w
     m.barTrack.height = 8
@@ -106,7 +118,14 @@ end sub
 
 sub onFocus()
     level = m.top.focusPercent * m.top.rowFocusPercent
-    if not m.top.rowListHasFocus or not m.top.gridHasFocus then level = 0
+    ' Each container sets only its own flag - and a RowList sets gridHasFocus to false for its
+    ' tiles - so read the one that belongs to the container this tile is in.
+    if inRowList() then
+        hasFocus = m.top.rowListHasFocus
+    else
+        hasFocus = m.top.gridHasFocus
+    end if
+    if not hasFocus then level = 0
     m.frame.opacity = level
     if level > 0.5 then
         m.title.color = "0xFFC24BFF"
@@ -114,3 +133,20 @@ sub onFocus()
         m.title.color = "0xF4E9DAFF"
     end if
 end sub
+
+' Looked up once the tile is attached (a field can change before it has a parent).
+function inRowList() as boolean
+    if m.inRowList <> invalid then return m.inRowList
+    node = m.top.getParent()
+    if node = invalid then return false
+    found = false
+    while node <> invalid
+        if node.subtype() = "RowList" then
+            found = true
+            exit while
+        end if
+        node = node.getParent()
+    end while
+    m.inRowList = found
+    return found
+end function

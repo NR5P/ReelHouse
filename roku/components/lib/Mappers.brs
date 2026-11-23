@@ -12,8 +12,13 @@
 '   shape    poster (2:3) | wide (16:9) | square
 '   raw      the JSON object it came from
 
+' Server art always comes sized (rh_sizedArt), which also gets a baseline JPEG: Roku can't draw
+' progressive JPEGs, and many posters and podcast covers are progressive. A size the caller
+' already put on the URL is kept.
 function rh_tile(kind as string, id as string, title as string, subtitle as string, art as string, shape as string) as object
-    return { kind: kind, id: id, title: title, subtitle: subtitle, art: art, progress: -1, shape: shape, watched: false, raw: invalid }
+    size = 400
+    if shape = "wide" then size = 600
+    return { kind: kind, id: id, title: title, subtitle: subtitle, art: rh_sizedArt(art, size), progress: -1, shape: shape, watched: false, raw: invalid }
 end function
 
 ' ---------------------------------------------------------------- Movies & TV
@@ -177,8 +182,10 @@ function rh_seasonIndexOf(seasons as object, episodeId as string) as integer
 end function
 
 ' The playback request's query (MOVIES.md, Playback). start < 0 resumes from the saved position.
+'' segments=ts: when the server repackages a file it sends MPEG-TS, not fMP4 - Roku plays the
+' video of the server's fMP4 sessions but finds no audio in them (AAC and Dolby alike).
 function rh_playbackQuery(start as dynamic, videoCodecs as string, audioCodecs as string) as object
-    q = { video: videoCodecs, audio: audioCodecs }
+    q = { video: videoCodecs, audio: audioCodecs, segments: "ts" }
     if rh_isNumber(start) then
         if start >= 0 then q.start = Int(start)
     end if
@@ -373,7 +380,7 @@ function rh_episodeQueueItem(ep as dynamic, server as string) as object
         id: id
         title: rh_getStr(ep, "title")
         subtitle: rh_getStr(ep, "podcastTitle")
-        art: rh_absUrl(server, rh_getStr(ep, "artUrl"))
+        art: rh_absUrl(server, rh_sizedArt(rh_getStr(ep, "artUrl"), 600))
         url: rh_absUrl(server, rh_getStr(ep, "audioUrl", "/api/podcasts/episodes/" + id + "/audio"))
         format: rh_episodeStreamFormat(rh_getStr(ep, "mimeType"))
         duration: rh_getNum(ep, "durationSeconds", 0)

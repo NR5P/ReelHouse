@@ -12,13 +12,11 @@ namespace ReelHouse;
 // here; it is served from where it is.
 public sealed class MusicArtCache(string root)
 {
-    // The sizes a ?size= is rounded up to, so the cache holds a handful of copies per album
-    // rather than one per pixel width some client happened to ask for.
-    private static readonly int[] Buckets = [64, 128, 200, 300, 400, 600, 800, 1200];
+    private readonly SizedArtCache _sized = new(Path.Combine(root, "sized"));
 
     public string Root { get; } = root;
 
-    public string SizedRoot => Path.Combine(Root, "sized");
+    public string SizedRoot => _sized.Root;
 
     public string AlbumPath(Guid albumId, string extension) => Path.Combine(Root, $"album-{albumId:N}{extension}");
 
@@ -26,50 +24,11 @@ public sealed class MusicArtCache(string root)
 
     public static string ArtistKey(Guid artistId) => $"artist:{artistId:N}";
 
-    public static int Bucket(int size)
-    {
-        var clamped = Math.Clamp(size, 64, 1200);
-        return Buckets.First(b => b >= clamped);
-    }
+    public static int Bucket(int size) => SizedArtCache.Bucket(size);
 
-    // A copy of the image no wider or taller than `size`, made once and kept. The original when
-    // it is already that small, or when it cannot be decoded (the client still gets a picture).
-    public async Task<string> SizedAsync(string original, IMediaFileSystem fs, int size, CancellationToken cancellationToken)
-    {
-        var bucket = Bucket(size);
-        var entry = fs.Stat(original);
-        if (entry is null) return original;
-        var stamp = $"{original}|{entry.Length}|{entry.ModifiedUtc.Ticks}";
-        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(stamp)).AsSpan(0, 10)).ToLowerInvariant();
-        var sized = Path.Combine(SizedRoot, $"{hash}-{bucket}.jpg");
-        if (File.Exists(sized)) return sized;
-        try
-        {
-            Directory.CreateDirectory(SizedRoot);
-            await using var stream = fs.OpenRead(original);
-            using var image = await Image.LoadAsync(SafeImageDecoding.Options, stream, cancellationToken);
-            if (image.Width <= bucket && image.Height <= bucket) return original;
-            image.Mutate(context => context.Resize(new ResizeOptions { Size = new Size(bucket, bucket), Mode = ResizeMode.Max }));
-            // A temporary name of its own: an album page asks for the same new size several times
-            // at once (every track row shows the cover), and two requests writing one shared .tmp
-            // collided ("being used by another process" -> 500).
-            var temporary = $"{sized}.{Guid.NewGuid():N}.tmp";
-            try
-            {
-                await image.SaveAsJpegAsync(temporary, new JpegEncoder { Quality = 85 }, cancellationToken);
-                if (!File.Exists(sized)) File.Move(temporary, sized, overwrite: true);
-            }
-            finally
-            {
-                try { File.Delete(temporary); } catch (IOException) { }
-            }
-            return File.Exists(sized) ? sized : original;
-        }
-        catch (Exception ex) when (ex is ImageFormatException or UnknownImageFormatException or InvalidImageContentException or IOException or NotSupportedException)
-        {
-            return original;
-        }
-    }
+    // A copy of the cover no wider or taller than `size` (see SizedArtCache).
+    public Task<string> SizedAsync(string original, IMediaFileSystem fs, int size, CancellationToken cancellationToken) =>
+        _sized.SizedAsync(original, fs, size, cancellationToken);
 }
 
 // Album covers from the Cover Art Archive, found through MusicBrainz. MusicBrainz asks every

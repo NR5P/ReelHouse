@@ -67,13 +67,15 @@ end function
 ' 12 -> "12", 6.25 -> "6.25"; never the leading space Str() adds.
 function rh_numStr(v as dynamic) as string
     if not rh_isNumber(v) then return ""
-    if v = Int(v) and Abs(v) < 2000000000 then return Str(Int(v)).Trim()
+    if v = Int(v) and Abs(v) < 2000000000 then return Int(v).ToStr()
     return Str(v).Trim()
 end function
 
+' Exact digits for any whole number. Str() formats through a float, so from about 10 million
+' up it gives "1.226835e+08" - wrong for IDs, positions and anything sent to the server.
 function rh_intStr(v as dynamic) as string
     if not rh_isNumber(v) then return "0"
-    return Str(Int(v)).Trim()
+    return Int(v).ToStr()
 end function
 
 ' One decimal place: 6.199999 -> "6.2", 7 -> "7.0".

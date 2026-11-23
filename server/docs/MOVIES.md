@@ -213,16 +213,29 @@ NetworkComputer = { "id": "…", "name": "Den PC", "host": "192.168.1.20", "user
 - Artwork, all `image/jpeg` or `image/png`, cached for a day, 404 when absent:
   `GET /api/media/items/{id}/poster`, `GET /api/media/items/{id}/backdrop`, `GET /api/media/items/{id}/thumb`.
   Show seasons: `GET /api/media/items/{showId}/seasons/{n}/poster`.
+  `?size=400` (any of these, and podcast art too) returns a copy no bigger than that (rounded up to
+  64/128/200/300/400/600/800/1200), made once and kept in `<data>/sized-art/`. A sized copy is
+  always a baseline JPEG: Roku can't draw progressive JPEGs, and many TMDB posters and podcast
+  covers are progressive, so a progressive original gets a copy even when it is already small.
+- A library rescan keeps each title's TMDB poster and backdrop. (Before 2026-11-22 it replaced
+  the stored artwork with what the files alone say, so every film without a `folder.jpg` lost its
+  poster on the next scan; the first start of a newer server sends those titles back through
+  TMDB, keeping their match.)
 
 ## Playback
 
-`GET /api/media/items/{id}/playback?start=0&video=h264,hevc&audio=aac,ac3,eac3,mp3&audioTrack=&subtitle=`
+`GET /api/media/items/{id}/playback?start=0&video=h264,hevc&audio=aac,ac3,eac3,mp3&audioTrack=&subtitle=&segments=`
 
 - `start` seconds to begin at. Omit (or `-1`) to resume from the saved progress; `0` starts over.
 - `video` and `audio` list the codecs the device decodes. Defaults are `h264` and `aac,mp3`.
   Apple: `video=h264,hevc&audio=aac,ac3,eac3,mp3`. Android (Media3): `video=h264,hevc&audio=aac,ac3,eac3,mp3`.
   Web and Windows (Chromium): `video=h264` plus `hevc` only when `MediaSource.isTypeSupported('video/mp4; codecs="hvc1.1.6.L120.B0"')`, `audio=aac,mp3`.
 - `audioTrack` is an `audioTracks[].index`; the default track is used when omitted.
+- `segments=ts` asks for HLS in MPEG-TS segments instead of fMP4 (the Roku app sends it). Roku
+  plays the video of an fMP4 session but finds no audio in it at all - AAC, AC-3 and E-AC-3
+  alike, even with a `CODECS` attribute saying what it is - while the same audio in MPEG-TS
+  plays, Dolby included.
+  It only changes how an HLS session is packaged; direct play is unaffected.
 
 Response:
 
@@ -279,7 +292,8 @@ Response:
   that season.
 - `GET /api/media/stream/{id}/{fileName}` is the direct file (any `fileName`; the extension is
   there so players sniff the container). `GET /api/media/hls/{session}/{file}` serves
-  `master.m3u8`, `index.m3u8`, `init.mp4`, `seg_00001.m4s`, … and `sub_{index}.m3u8`.
+  `master.m3u8`, `index.m3u8`, `init.mp4`, `seg_00001.m4s`, … (`seg_00001.ts`, … as `video/mp2t`
+  for `segments=ts`) and `sub_{index}.m3u8`.
 - `GET /api/media/items/{id}/subtitles/{index}.vtt?offset=0` returns WebVTT, extracted and cached
   on first request. `offset` shifts every cue earlier by that many seconds (HLS sessions use it).
 

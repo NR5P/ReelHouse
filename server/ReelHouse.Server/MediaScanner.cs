@@ -512,7 +512,8 @@ public sealed partial class MediaScanner : IDisposable
                 Progress = new MediaScanProgress("metadata", null, processed, total, startedAt);
                 try
                 {
-                    await FetchMetadataAsync(item, null, seasonCache, cancellationToken);
+                    // An item already matched (sent back for a refresh) keeps its match.
+                    await FetchMetadataAsync(item, null, seasonCache, cancellationToken, knownTmdbId: item.TmdbId);
                     consecutiveFailures = 0;
                 }
                 catch (TmdbRejectedKeyException ex) { LastError = ex.Message; return; }
@@ -527,9 +528,11 @@ public sealed partial class MediaScanner : IDisposable
         }
     }
 
-    // Matches one item against TMDB (or takes the match the admin chose) and writes what came
-    // back. For a show, also fills in every episode from the season listings.
-    public async Task FetchMetadataAsync(MediaItem item, int? chosenTmdbId, Dictionary<(int, int), TmdbClient.Season?>? seasonCache, CancellationToken cancellationToken)
+    // Matches one item against TMDB (or takes the match the admin chose, or the one it already
+    // had - knownTmdbId, which unlike a chosen match doesn't lock it) and writes what came back.
+    // For a show, also fills in every episode from the season listings.
+    public async Task FetchMetadataAsync(MediaItem item, int? chosenTmdbId, Dictionary<(int, int), TmdbClient.Season?>? seasonCache, CancellationToken cancellationToken,
+        int? knownTmdbId = null)
     {
         seasonCache ??= new();
         var now = DateTimeOffset.UtcNow;
@@ -537,7 +540,7 @@ public sealed partial class MediaScanner : IDisposable
         {
             case MediaKinds.Movie:
             {
-                var tmdbId = chosenTmdbId ?? await FindAsync(MediaKinds.Movie, item.Title, item.Year, cancellationToken);
+                var tmdbId = chosenTmdbId ?? knownTmdbId ?? await FindAsync(MediaKinds.Movie, item.Title, item.Year, cancellationToken);
                 var movie = tmdbId is { } id ? await _tmdb.GetMovieAsync(id, cancellationToken) : null;
                 if (movie is null)
                 {
@@ -569,7 +572,7 @@ public sealed partial class MediaScanner : IDisposable
             }
             case MediaKinds.Show:
             {
-                var tmdbId = chosenTmdbId ?? await FindAsync(MediaKinds.Show, item.Title, item.Year, cancellationToken);
+                var tmdbId = chosenTmdbId ?? knownTmdbId ?? await FindAsync(MediaKinds.Show, item.Title, item.Year, cancellationToken);
                 var show = tmdbId is { } id ? await _tmdb.GetShowAsync(id, cancellationToken) : null;
                 var episodes = await _store.GetItemsAsync(new MediaQuery(Kinds: [MediaKinds.Episode], ParentId: item.Id, IncludeMissing: true), cancellationToken);
                 if (show is null)

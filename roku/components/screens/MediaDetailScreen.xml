@@ -23,7 +23,9 @@
         <Label id="fileInfo" translation="[440,780]" width="1380" color="0xA99A8EFF" font="font:SmallestSystemFont" />
         <Label id="error" translation="[440,860]" width="1380" wrap="true" maxLines="3" color="0xE23D3DFF" font="font:SmallBoldSystemFont" />
 
-        <ButtonGroup id="buttons" translation="[96,640]" />
+        <!-- As wide as the poster above it; the default (large) button font cut "Resume 1:06:48"
+             and "Add to My List" off at that width. -->
+        <ButtonGroup id="buttons" translation="[96,640]" textFont="font:SmallBoldSystemFont" focusedTextFont="font:SmallBoldSystemFont" />
 
         <Group id="showPanel" visible="false">
             <Label text="SEASONS" translation="[440,560]" color="0xFFC24BFF" font="font:SmallBoldSystemFont" />

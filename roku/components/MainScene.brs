@@ -308,7 +308,10 @@ end sub
 
 sub playVideo(itemId as string, start as dynamic, title as string)
     if itemId = "" then return
-    if m.player.active then m.player.command = "pause"
+    ' Stopped, not paused: Roku allows one open player, and a paused Audio node still holds it -
+    ' the video then fails with "only one playing instance supported". Stopping saves the
+    ' podcast's place (or the track's listen) first.
+    if m.player.active then m.player.command = "stop"
     pushScreen("VideoPlayerScreen", { itemId: itemId, start: start, title: title })
 end sub
 

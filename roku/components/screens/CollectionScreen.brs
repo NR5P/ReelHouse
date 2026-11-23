@@ -269,7 +269,7 @@ sub onPodcast(resp as object)
     unplayedText = ""
     if unplayed > 0 then unplayedText = rh_intStr(unplayed) + " unplayed"
     m.subtitle.text = rh_join([rh_getStr(d, "author"), unplayedText], " · ")
-    m.art.uri = rh_absUrl(m.global.serverUrl, rh_getStr(d, "artUrl"))
+    m.art.uri = rh_absUrl(m.global.serverUrl, rh_sizedArt(rh_getStr(d, "artUrl"), 420))
 end sub
 
 sub onEpisodes(resp as object)

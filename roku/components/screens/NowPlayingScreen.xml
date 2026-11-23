@@ -22,7 +22,8 @@
         <Rectangle id="barFill" translation="[840,600]" width="0" height="10" color="0xFFC24BFF" />
         <Label id="elapsed" translation="[840,624]" width="300" color="0xF4E9DAFF" font="font:SmallSystemFont" />
         <Label id="remaining" translation="[1500,624]" width="300" horizAlign="right" color="0xF4E9DAFF" font="font:SmallSystemFont" />
-        <ButtonGroup id="buttons" translation="[840,700]" layoutDirection="horiz" itemSpacings="[16]" />
+        <ButtonGroup id="buttons" translation="[840,700]" layoutDirection="horiz" itemSpacings="[16]"
+            textFont="font:SmallBoldSystemFont" focusedTextFont="font:SmallBoldSystemFont" />
         <Label id="error" translation="[840,820]" width="960" wrap="true" maxLines="3" color="0xE23D3DFF" font="font:SmallBoldSystemFont" />
     </children>
 </component>
