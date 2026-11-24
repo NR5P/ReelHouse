@@ -21,6 +21,20 @@ enum ReelHouseTheme {
                              dark: .init(red: 1.0, green: 0.60, blue: 0.24))
     static let red = Color(light: .init(red: 0.76, green: 0.25, blue: 0.05),
                            dark: .init(red: 1.0, green: 0.35, blue: 0.21))
+    // "Connected" and other all-is-well lights. Gold already means "focused" and "selected", so a
+    // gold status dot read as a button rather than as a light.
+    static let online = Color(light: .init(red: 0.10, green: 0.55, blue: 0.25),
+                              dark: .init(red: 0.35, green: 0.86, blue: 0.48))
+    // The tint an unfocused button is drawn with: tvOS fills a resting button with a faint wash of
+    // its tint, so under the gold every idle button turned a muddy brown and the whole screen read
+    // as olive. A neutral wash gives the familiar frosted-glass pill; gold is kept for focus.
+    static let glass = Color(light: .black, dark: .white)
+
+    // Behind every tab: near-black with the warmth of a darkened theatre - a faint marquee glow from
+    // the top and a hint of curtain red low on the left - instead of tvOS's stock grey-blue, which
+    // fought the gold.
+    static let backdropBase = Color(light: .init(red: 0.95, green: 0.94, blue: 0.92),
+                                    dark: .init(red: 0.045, green: 0.04, blue: 0.05))
 
     // Ceiling on the clip/snapshot at the top of a detail screen. A detail screen is a ScrollView,
     // so its height proposal is unbounded and a 16:9 image asked to fit the full 1800pt content
@@ -77,13 +91,78 @@ extension View {
 // Lists and Forms put .automatic back: their rows already go white with a dark label on focus,
 // and keep the green and red their titles are drawn in. Menus aren't buttons, so a Menu label
 // carries focusContrastForeground itself.
+//
+// The fill follows focus too: neutral frosted glass at rest, gold (red for a destructive button)
+// once focused. \.isFocused is only true inside the label, so the label reports it up and the
+// button re-tints itself.
 struct FocusContrastButtonStyle: PrimitiveButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
-        Button(role: configuration.role, action: configuration.trigger) {
+        FocusTintedButton(configuration: configuration)
+    }
+}
+
+private struct FocusTintedButton: View {
+    let configuration: PrimitiveButtonStyleConfiguration
+    @State private var focused = false
+
+    var body: some View {
+        let destructive = configuration.role == .destructive
+        // A destructive role makes tvOS fill the resting pill red itself - red label on red pill.
+        // The label colour and the focused fill already say "destructive"; the role isn't needed.
+        Button(role: destructive ? nil : configuration.role, action: configuration.trigger) {
             configuration.label
-                .focusContrastForeground(unfocused: configuration.role == .destructive ? ReelHouseTheme.red : .primary)
+                .focusContrastForeground(unfocused: destructive ? ReelHouseTheme.red : .primary)
+                .background(FocusReporter())
         }
         .buttonStyle(.automatic)
+        .tint(focused ? (destructive ? ReelHouseTheme.red : ReelHouseTheme.gold) : ReelHouseTheme.glass)
+        .onPreferenceChange(LabelFocusedKey.self) { focused = $0 }
+    }
+}
+
+// Settings' Form rows: the platform row, but a destructive one (Sign Out, Remove Library) keeps a
+// readable label. With the role tvOS drew it pale pink on the white focused row; without it, and
+// with the label red at rest and dark under focus, it reads like every other row.
+struct FormRowButtonStyle: PrimitiveButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        let destructive = configuration.role == .destructive
+        Button(role: destructive ? nil : configuration.role, action: configuration.trigger) {
+            if destructive {
+                configuration.label.focusContrastForeground(unfocused: ReelHouseTheme.red)
+            } else {
+                configuration.label
+            }
+        }
+        .buttonStyle(.automatic)
+    }
+}
+
+private struct LabelFocusedKey: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
+}
+
+private struct FocusReporter: View {
+    @Environment(\.isFocused) private var isFocused
+    var body: some View {
+        Color.clear.preference(key: LabelFocusedKey.self, value: isFocused)
+    }
+}
+
+// The app's backdrop (see ReelHouseTheme.backdropBase).
+struct ReelHouseBackdrop: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let dark = colorScheme == .dark
+        ZStack {
+            ReelHouseTheme.backdropBase
+            RadialGradient(colors: [ReelHouseTheme.gold.opacity(dark ? 0.10 : 0.14), .clear],
+                           center: UnitPoint(x: 0.5, y: -0.15), startRadius: 0, endRadius: 1100)
+            RadialGradient(colors: [ReelHouseTheme.curtain.opacity(dark ? 0.08 : 0.06), .clear],
+                           center: UnitPoint(x: 0.0, y: 1.05), startRadius: 0, endRadius: 900)
+        }
+        .ignoresSafeArea()
     }
 }
 

@@ -56,7 +56,7 @@ private struct SpeakerRow: View {
                 Text(line).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer()
-            Circle().fill(speaker.online == true ? ReelHouseTheme.gold : Color.gray).frame(width: 14, height: 14)
+            Circle().fill(speaker.online == true ? ReelHouseTheme.online : Color.gray).frame(width: 14, height: 14)
         }
     }
 

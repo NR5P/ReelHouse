@@ -24,7 +24,11 @@ python3 scripts/make-placeholder-icon.py   # regenerate the placeholder icon / T
 
 Debug builds accept launch arguments for testing without a remote: `-debugSection movies|music|podcasts|settings`,
 `-debugSettingsPage mediaLibraries|folderPicker|music|podcasts|speaker|audioFolderPicker`,
-`-debugFocusWalk 8`, `-debugBriefing YES`.
+`-debugFocusWalk 8`, `-debugBriefing YES`, `-debugShowLogin YES` (the sign-in screen while signed in),
+`-debugRemote YES` (a scripted remote; see `App/DebugFocusWalker.swift`).
+
+Typing into the tvOS simulator is awkward; to sign the simulator's app in, run
+`python3 scripts/sim-signin.py [server] [simulator-udid]` in a terminal and relaunch the app.
 
 ## What is in it
 

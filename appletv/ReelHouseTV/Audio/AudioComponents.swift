@@ -214,7 +214,7 @@ struct ArtMosaic: View {
 enum AudioTileSize {
     static let square: CGFloat = 280
     static let small: CGFloat = 220
-    static let episodeWidth: CGFloat = 420
+    static let episodeWidth: CGFloat = 560
 }
 
 // A square card with the title and a line under it. Either a link to a route or an action.
@@ -353,7 +353,12 @@ struct EpisodeCard: View {
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                 VStack(alignment: .leading, spacing: 6) {
                     Text(episode.podcastTitle ?? "").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                    Text(episode.title).font(.callout.weight(.semibold)).lineLimit(2)
+                    // Three lines, a size down: episode titles run long ("MBW 1044: Lower Your
+                    // Expectations…"), and two lines of callout cut most of them to a word or two.
+                    Text(episode.title).font(.subheadline.weight(.semibold)).lineLimit(2)
+                        // Otherwise the fixed-height card squeezes it to one line whenever a
+                        // progress bar is drawn underneath.
+                        .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                     HStack(spacing: 10) {
                         Text(EpisodeText.meta(episode)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)

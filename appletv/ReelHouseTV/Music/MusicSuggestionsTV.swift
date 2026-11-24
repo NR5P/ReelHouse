@@ -31,7 +31,8 @@ struct MusicSuggestionsShelfTV: View {
             // Never empty: an empty stack never appears, so its .task below would never load.
             Color.clear.frame(height: 0)
             if !albums.isEmpty || suggestions?.isWorking == true {
-                MediaShelfTV(title: "Suggested for You") {
+                MediaShelfTV(title: "Suggested for You", subtitle: notice ?? suggestions?.basedOnLine,
+                             subtitleStyle: notice == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(ReelHouseTheme.gold)) {
                     if albums.isEmpty {
                         ProgressView().frame(width: AudioTileSize.square, height: AudioTileSize.square)
                     }
@@ -42,12 +43,6 @@ struct MusicSuggestionsShelfTV: View {
                             cover(album)
                         }
                     }
-                }
-                if let line = notice ?? suggestions?.basedOnLine {
-                    Text(line)
-                        .font(.caption)
-                        .foregroundStyle(notice == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(ReelHouseTheme.gold))
-                        .padding(.horizontal, 60)
                 }
             }
         }

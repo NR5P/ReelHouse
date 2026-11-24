@@ -21,7 +21,7 @@ struct RootView: View {
             Group {
                 if !model.isConfigured {
                     ServerSetupView()
-                } else if model.requiresLogin {
+                } else if model.requiresLogin || Self.debugShowsLogin {
                     LoginView()
                 } else {
                     TabView(selection: $selection) {
@@ -29,9 +29,16 @@ struct RootView: View {
                             tab(section)
                         }
                     }
-                    // A section switched off on the server takes its tab with it.
-                    .onChange(of: sections) { _, visible in
-                        if !visible.contains(selection), let first = visible.first { selection = first }
+                    // Rebuilt whenever the set of tabs changes. Adding tabs to a live TabView left
+                    // the tvOS tab controller with pages it never showed: on the first launch after
+                    // signing in (when only Settings is known until the server answers) the app sat
+                    // on Settings, and every page, Settings included, drew as an empty backdrop.
+                    .id(sections)
+                    // A section switched off on the server takes its tab with it, and Settings -
+                    // the only tab before the server has answered - gives way to the first real one.
+                    .onChange(of: sections) { old, visible in
+                        let onlyFallback = selection == .settings && old == [.settings]
+                        if !visible.contains(selection) || onlyFallback, let first = visible.first { selection = first }
                     }
                     .onAppear {
                         if !sections.contains(selection), let first = sections.first { selection = first }
@@ -54,6 +61,10 @@ struct RootView: View {
                 }
             }
         }
+        // Full screen whatever is showing: the sign-in card alone sized this stack to itself, and
+        // the backdrop drew as a box around it.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background { ReelHouseBackdrop() }
         .tint(ReelHouseTheme.gold)
         .buttonStyle(FocusContrastButtonStyle())
         .task(id: model.serverURL) {
@@ -68,6 +79,13 @@ struct RootView: View {
             await audio.connect(model: model)
         }
     }
+
+    // `-debugShowLogin YES`: the sign-in screen while still signed in, to check its look.
+    #if DEBUG
+    private static let debugShowsLogin = UserDefaults.standard.bool(forKey: "debugShowLogin")
+    #else
+    private static let debugShowsLogin = false
+    #endif
 
     private func tab(_ section: AppSection) -> some View {
         NavigationStack {
@@ -93,7 +111,9 @@ private extension View {
     // dark label on focus and keep the green and red their titles are drawn in - so they keep the
     // platform's style rather than the app-wide FocusContrastButtonStyle.
     @ViewBuilder func formRowButtons(_ enabled: Bool) -> some View {
-        if enabled { buttonStyle(.automatic) } else { self }
+        // Plain labels too: a Form draws every button and toggle title in the tint, which made
+        // half the Settings rows gold - the same gold that means "focused" everywhere else.
+        if enabled { buttonStyle(FormRowButtonStyle()).tint(.primary) } else { self }
     }
 }
 
@@ -191,7 +211,7 @@ struct ConnectionBadge: View {
 
     private var statusColor: Color {
         switch model.connectionState {
-        case .online: ReelHouseTheme.gold
+        case .online: ReelHouseTheme.online
         case .checking, .authenticationRequired: ReelHouseTheme.amber
         case .offline: ReelHouseTheme.red
         case .notConfigured: .secondary

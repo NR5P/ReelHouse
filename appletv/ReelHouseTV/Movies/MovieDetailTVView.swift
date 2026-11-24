@@ -76,8 +76,19 @@ struct MovieDetailTVView: View {
             if let url = model.client.mediaURL(detail?.summary.backdropUrl) {
                 PosterImage(url: url, title: "", maxPixel: 1920)
             }
-            LinearGradient(colors: [.black.opacity(0.92), .black.opacity(0.55), .black.opacity(0.1)], startPoint: .leading, endPoint: .trailing)
-            LinearGradient(colors: [.clear, .black.opacity(0.9)], startPoint: .center, endPoint: .bottom)
+            // Heavy through the left 60%, where the title and overview run, then easing off so
+            // the picture still shows on the right. The old even fade left the overview's middle
+            // over a half-strength wash, and a bright backdrop came straight through it.
+            LinearGradient(stops: [.init(color: .black.opacity(0.95), location: 0),
+                                   .init(color: .black.opacity(0.82), location: 0.4),
+                                   .init(color: .black.opacity(0.45), location: 0.7),
+                                   .init(color: .black.opacity(0.15), location: 1)],
+                           startPoint: .leading, endPoint: .trailing)
+            LinearGradient(stops: [.init(color: .black.opacity(0.35), location: 0),
+                                   .init(color: .clear, location: 0.3),
+                                   .init(color: .clear, location: 0.5),
+                                   .init(color: .black.opacity(0.95), location: 1)],
+                           startPoint: .top, endPoint: .bottom)
         }
         .ignoresSafeArea()
     }
@@ -201,16 +212,19 @@ struct MovieDetailTVView: View {
                 }
                 .accessibilityLabel(item.isInList ? "Remove from My List" : "Add to My List")
             }
+            if item.canResume, let remaining = item.remainingLabel {
+                Text(remaining).font(.caption).foregroundStyle(.white.opacity(0.7))
+            }
+            // Off at the far end, away from My List and Play: it sat one click from My List, and
+            // it is the one button here that can't be taken back.
             if detail.canDelete == true {
+                Spacer(minLength: 60)
                 Button(role: .destructive) {
                     confirmingDelete = true
                 } label: {
                     Label("Delete", systemImage: "trash")
                 }
                 .disabled(working)
-            }
-            if item.canResume, let remaining = item.remainingLabel {
-                Text(remaining).font(.caption).foregroundStyle(.white.opacity(0.7))
             }
         }
     }

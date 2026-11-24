@@ -12,20 +12,37 @@ struct LoginView: View {
         VStack(spacing: 36) {
             BrandHeader().frame(maxWidth: 520)
             VStack(alignment: .leading, spacing: 18) {
-                Text("Sign in").foregroundStyle(ReelHouseTheme.curtain).font(.title2.bold())
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Sign in").font(.title2.bold())
+                    if let host = URL(string: model.activeServerURL)?.host() {
+                        Text("to ReelHouse on \(host)").font(.callout).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.bottom, 8)
                 TextField("Username", text: $username)
+                    .textContentType(.username)
                 SecureField("Password", text: $password)
+                    .textContentType(.password)
                 if let errorMessage {
-                    Text(errorMessage).foregroundStyle(ReelHouseTheme.red)
+                    Label(errorMessage, systemImage: "exclamationmark.circle.fill")
+                        .font(.callout)
+                        .foregroundStyle(ReelHouseTheme.red)
                 }
-                Button(signingIn ? "Connecting…" : "Sign In") {
+                // The app's own button: frosted at rest, gold under focus. The prominent style
+                // painted a gold pill with a pale label that was unreadable while it was disabled -
+                // which is how it sits until both fields are filled in.
+                Button {
                     Task { await signIn() }
+                } label: {
+                    Text(signingIn ? "Connecting…" : "Sign In")
+                        .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
                 .disabled(signingIn || username.isEmpty || password.isEmpty)
+                .padding(.top, 8)
             }
+            .padding(24)
             .reelHouseCard()
-            .frame(maxWidth: 600)
+            .frame(maxWidth: 680)
         }
         .padding(80)
         .onSubmit {

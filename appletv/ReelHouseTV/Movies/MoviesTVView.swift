@@ -262,7 +262,16 @@ private struct MediaHeroTV: View {
         NavigationLink(value: item.route) {
             ZStack(alignment: .bottomLeading) {
                 PosterImage(url: model.client.mediaURL(item.backdropUrl), title: item.title, maxPixel: 1920)
-                LinearGradient(colors: [.black.opacity(0.85), .black.opacity(0.2), .clear], startPoint: .bottom, endPoint: .top)
+                // From the bottom and from the left, where the text sits: a bright poster (a sunlit
+                // street, a blue sky) otherwise shows straight through the overview.
+                LinearGradient(stops: [.init(color: .black.opacity(0.9), location: 0),
+                                       .init(color: .black.opacity(0.45), location: 0.45),
+                                       .init(color: .clear, location: 0.8)],
+                               startPoint: .bottom, endPoint: .top)
+                LinearGradient(stops: [.init(color: .black.opacity(0.6), location: 0),
+                                       .init(color: .black.opacity(0.25), location: 0.5),
+                                       .init(color: .clear, location: 0.75)],
+                               startPoint: .leading, endPoint: .trailing)
                 VStack(alignment: .leading, spacing: 10) {
                     Text(item.title)
                         .font(.system(size: 64, weight: .bold))
@@ -290,6 +299,7 @@ private struct MediaHeroTV: View {
                     }
                 }
                 .foregroundStyle(.white)
+                .shadow(color: .black.opacity(0.5), radius: 8, y: 2)
                 .padding(50)
             }
             // The screen's 1920 less the 80-point safe margins and this row's own 60-point
@@ -305,13 +315,25 @@ private struct MediaHeroTV: View {
 // A titled row that scrolls sideways.
 struct MediaShelfTV<Content: View>: View {
     let title: String
+    // A line under the heading ("Based on: …"); a caption under the row instead read as belonging
+    // to its first tile.
+    var subtitle: String? = nil
+    var subtitleStyle: AnyShapeStyle = AnyShapeStyle(.secondary)
     @ViewBuilder let content: Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text(title)
-                .font(.title3.bold())
-                .padding(.horizontal, 60)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.title3.bold())
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(subtitleStyle)
+                        .lineLimit(1)
+                }
+            }
+            .padding(.horizontal, 60)
             ScrollView(.horizontal) {
                 LazyHStack(alignment: .top, spacing: 40) {
                     content
